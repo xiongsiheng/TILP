@@ -1,0 +1,24 @@
+P1376	0	capital of
+P512	4	academic degree
+P579	3	IMA status and/or rank
+P150	18	contains administrative territorial entity
+P190	5	twinned administrative body
+P551	19	residence
+P131	1	located in the administrative territorial entity
+P793	21	significant event
+P1435	13	heritage designation
+P39	14	position held
+P17	6	country
+P54	22	member of sports team
+P31	15	instance of
+P6	7	has head of government
+P1411	20	nominated for
+P2962	2	title of chess person
+P463	9	member of
+P1346	16	has winner
+P108	10	employer
+P69	23	educated at
+P166	17	receive award
+P102	11	member of political party
+P27	12	country of citizenship
+P26	8	spouse
