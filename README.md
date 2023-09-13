@@ -1,5 +1,5 @@
 ## TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs
-
+This repository contains the code for the paper [TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs] (https://openreview.net/pdf?id=_X12NmQKvX).
 
 ## Citation
 ```
