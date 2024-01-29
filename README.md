@@ -14,21 +14,37 @@ After the installation, you need to create a file folder for experiments.
 The structure of the file folder should be
 
 project/
+
 │
+
 ├── src/
+
 │   ├── main.py
+
 │   ├── module1.py
+
 │   └── module2.py
+
 │
+
 ├── data/
+
 │   ├── data1.csv
+
 │   └── data2.csv
+
 │
+
 ├── docs/
+
 │   └── README.md
+
 │
+
 └── tests/
+
     ├── test_main.py
+    
     └── test_module1.py
 
 
