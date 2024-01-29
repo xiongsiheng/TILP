@@ -12,7 +12,26 @@ It is recommended to use anaconda for installation.
 After the installation, you need to create a file folder for experiments. 
 
 The structure of the file folder should be
-```sh
+
+project/
+│
+├── src/
+│   ├── main.py
+│   ├── module1.py
+│   └── module2.py
+│
+├── data/
+│   ├── data1.csv
+│   └── data2.csv
+│
+├── docs/
+│   └── README.md
+│
+└── tests/
+    ├── test_main.py
+    └── test_module1.py
+
+
 TILP/
 
 TILP/src/
@@ -34,7 +53,7 @@ TILP/output/learned_rules/
 TILP/output/explore_res/
 
 TILP/output/rank_dict/
-```
+
 
 To run the code, simply use the command
 ```sh
