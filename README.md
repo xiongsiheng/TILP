@@ -13,48 +13,23 @@ After the installation, you need to create a file folder for experiments.
 
 The structure of the file folder should be
 ```sh
-project/
+TILP/
 │
 ├── src/
-│   ├── main.py
-│   ├── module1.py
-│   └── module2.py
 │
 ├── data/
-│   ├── data1.csv
-│   └── data2.csv
+│   ├── WIKIDATA12k/
+│   └── YAGO11k/
 │
-├── docs/
-│   └── README.md
-│
-└── tests/
-    ├── test_main.py
-    └── test_module1.py
+└── output/
+    ├── found_rules/
+    ├── found_t_s/
+    ├── train_weights_tfm/
+    ├── train_weights/
+    ├── learned_rules/
+    ├── explore_res/
+    └── rank_dict/
 ```
-
-
-TILP/
-
-TILP/src/
-
-TILP/data/WIKIDATA12k/
-
-TILP/data/YAGO11k/
-
-TILP/output/found_rules/
-
-TILP/output/found_t_s/
-
-TILP/output/train_weights_tfm/
-
-TILP/output/train_weights/
-
-TILP/output/learned_rules/
-
-TILP/output/explore_res/
-
-TILP/output/rank_dict/
-
 
 To run the code, simply use the command
 ```sh
