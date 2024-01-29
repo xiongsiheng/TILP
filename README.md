@@ -9,10 +9,11 @@ To run the code, you need to first set up the environment given in requirements.
 
 It is recommended to use anaconda for installation.
 
-After the installation, you need to create a file folder for experiments. The structure of the file folder should be
+After the installation, you need to create a file folder for experiments. 
+
+The structure of the file folder should be
 
 TILP/
-
 TILP/src/
 
 TILP/data/WIKIDATA12k/
