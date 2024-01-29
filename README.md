@@ -1,10 +1,10 @@
 ## TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs
 This repository contains the code for the paper [TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs](https://openreview.net/pdf?id=_X12NmQKvX).
 
-##Introduction
+## Introduction
 We propose TILP, a differentiable framework for temporal logical rules learning. By designing a constrained random walk mechanism and the introduction of temporal operators, we ensure the efficiency of our model. We present temporal features modeling in tKG, e.g., recurrence, temporal order, interval between pair of relations, and duration, and incorporate it into our learning process.
 
-##Commands
+## Commands
 To run the code, you need to first set up the environment given in requirements.txt.
 
 It is recommended to use anaconda for installation.
@@ -39,7 +39,7 @@ To run the code, simply use the command
 python main.py
 '''
 
-##Data
+## Data
 For some required files:
 
 1) pos_examples_idx.json:
