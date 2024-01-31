@@ -33,7 +33,7 @@ TILP/
 
 To run the code, simply use the command
 ```sh
-python main.py
+python src/main.py
 ```
 
 ## Dataset
