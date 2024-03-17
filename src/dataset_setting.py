@@ -66,22 +66,22 @@ def split_dataset(dataset_using, dataset_name1, train_edges, num_rel):
     if os.path.exists(path):
         with open(path, 'r') as f:
             pos_examples_idx = json.load(f)
-    else:
-        print('pos_examples_idx.json does not exist')
+    # else:
+    #     print('pos_examples_idx.json does not exist')
 
     path = '../data/' + dataset_name1 + '/bg_train.txt'
     if os.path.exists(path):
         bg_train = read_dataset_txt(path)
         bg_train = obtain_inv_edges(bg_train, num_rel)
-    else:
-        print('bg_train.txt does not exist')
+    # else:
+    #     print('bg_train.txt does not exist')
 
     path = '../data/' + dataset_name1 + '/bg_pred.txt'
     if os.path.exists(path):
         bg_pred = read_dataset_txt(path)
         bg_pred = obtain_inv_edges(bg_pred, num_rel)
-    else:
-        print('bg_pred.txt does not exist')
+    # else:
+    #     print('bg_pred.txt does not exist')
 
     if len(pos_examples_idx) == 0:
         pos_examples_idx = list(range(len(train_edges)))

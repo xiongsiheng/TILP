@@ -14,15 +14,17 @@ from other_funs import *
 
 
 
-dataset_using = ['wiki', 'YAGO'][1]
+dataset_selection = 1
+dataset_using = ['wiki', 'YAGO'][dataset_selection]
 steps_to_do = ['find_rules', 'train_models', 'create_rule_dicts', 'predict', 'evaluate']
 
 
 
 
 num_pattern = 3
-num_ruleLen = [3, 5][1]
 const_pattern_ls = [-1, 0, 1]
+num_ruleLen = [3, 5][dataset_selection]  # max rule length
+
 overall_mode = 'total'
 
 if dataset_using == 'wiki':
@@ -37,7 +39,19 @@ elif dataset_using == 'YAGO':
 
 para_ls_for_trainer = [num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode]
 targ_rel_ls = range(num_rel)
-f_use_tfm = 1
+f_use_tfm = 0
+
+
+
+
+if not os.path.exists('../output'):
+    os.mkdir('../output')
+output_files = ['found_rules', 'found_t_s', 'train_weights_tfm', 'train_weights', 'learned_rules', 'explore_res', 'rank_dict']
+for filename in output_files:
+    if not os.path.exists('../output/' + filename):
+        os.mkdir('../output/' + filename)
+
+
 
 train_edges, valid_data, valid_data_inv, test_data, test_data_inv = do_normal_setting_for_dataset(dataset_name1, num_rel)
 assiting_data = obtain_assiting_data(dataset_using, dataset_name1, train_edges, num_rel, num_entites)
