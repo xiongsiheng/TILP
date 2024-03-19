@@ -4,7 +4,7 @@ This repository contains the code for the paper [TILP: Differentiable Learning o
 ## Introduction
 We propose TILP, a differentiable framework for temporal logical rules learning. By designing a constrained random walk mechanism and the introduction of temporal operators, we ensure the efficiency of our model. We present temporal features modeling in tKG, e.g., recurrence, temporal order, interval between pair of relations, and duration, and incorporate it into our learning process.
 
-## Commands
+## How to run
 To run the code, you need to first set up the environment given in requirements.txt.
 
 It is recommended to use anaconda for installation.
