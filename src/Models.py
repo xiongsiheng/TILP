@@ -1792,8 +1792,6 @@ class TILP(object):
             elif self.overall_mode in ['few', 'biased', 'time_shifting']:
                 path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
-            # print(path)
-
             if not os.path.exists(path):
                 # print(path + ' not found')
                 cur_rules_dict = {}
@@ -1802,25 +1800,20 @@ class TILP(object):
                     cur_rules_dict = json.load(f)
             for s_i in cur_rules_dict.keys():
                 i = int(s_i)
-                alpha_dict = self.merge_rules(cur_rules_dict[s_i], 2*i + i*(i-1)/2)
-                # print(cur_rules_dict[s_i])
-                # print(alpha_dict)
-                # sys.exit()
-
+                alpha_dict = self.merge_rules(cur_rules_dict[s_i], [1]*(2*i + i*(i-1)/2)) # merged rules share the same shallow score
                 rules_dict += [r for r in alpha_dict]
-
 
         # counter and select most freq
         self.shallow_rule_dict[rel_idx] = self.count_lists(rules_dict)[:self.shallow_score_length]
 
-        # print(self.shallow_rule_dict[rel_idx], len(self.shallow_rule_dict[rel_idx]))
-        # print(rel_idx, len(self.shallow_rule_dict[rel_idx]), len(idx_ls))
+        return
 
 
-    def merge_rules(self, rules_dict, pre_len):
+    def merge_rules(self, rules_dict, pre_vec):
+        # pre_vec: [1, 1, 1, 0, 0, ...] decide which notations to preserve
         alpha_dict = {}
         for r in rules_dict:
-            cur_rule = tuple(r['rule'][:pre_len])
+            cur_rule = tuple([a*b for a, b in zip(r['rule'], pre_vec)])
             if cur_rule not in alpha_dict:
                 alpha_dict[cur_rule] = []
             alpha_dict[cur_rule].append(r['alpha'])
@@ -1853,24 +1846,20 @@ class TILP(object):
                 if s_i not in rules_dict.keys():
                     rules_dict[s_i] = []
                 rules_dict[s_i] += cur_rules_dict[s_i]
-                # print(cur_rules_dict[s_i])
 
                 if s_i not in merged_rules_dict.keys():
                     merged_rules_dict[s_i] = []
 
-                alpha_dict = self.merge_rules(cur_rules_dict[s_i], 2*i + i*(i-1)/2)
+                alpha_dict = self.merge_rules(cur_rules_dict[s_i], [1] * (2*i + i*(i-1)/2))
                 merged_rules_dict[s_i] += [{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict]
-                # print(alpha_dict)
-                # print([{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict])
 
-        # print(idx_ls)
 
         input_dict = {}
         f_valid = 0
 
         shallow_rule_idx = np.zeros((1, self.shallow_score_length))
         shallow_rule_alpha = np.zeros((1, self.shallow_score_length))
-        # print(self.shallow_rule_dict[rel_idx])
+
 
         for i in range(self.max_explore_len):
             s_len = str(i+1)
@@ -1892,14 +1881,8 @@ class TILP(object):
                 if rule_mode == 1:
                     input_dict[i] = {'rel': np.zeros((1, i+1)), 'TR': np.zeros((1, (i+1)*(i+2)//2)), 'alpha': np.zeros((1, 1))}
 
-            # print(input_dict[i])
-
-
             if s_len in merged_rules_dict.keys():
                 for r in merged_rules_dict[s_len]:
-                    # if r['rule'] not in self.shallow_rule_dict[rel_idx]:
-                    #     self.shallow_rule_dict[rel_idx].append(r['rule'])
-
                     cur_shallow_rule = r['rule']
                     if cur_shallow_rule not in self.shallow_rule_dict[rel_idx]:
                         continue
