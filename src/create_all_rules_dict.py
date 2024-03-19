@@ -10,12 +10,12 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+from Models import TILP
 
 
-def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, para_ls_for_trainer, mode='total', 
+def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, para_ls_for_model, mode='general', 
                                 pos_examples_idx= None):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
 
     n_t = len(train_edges)//2
     n_r = n_t - (i + 1) * n_p
@@ -28,20 +28,20 @@ def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, para_ls_for_trai
     else:
         idxs = range(s+i * n_s, s+n_t)
 
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    rule_dict, rule_sup_num_dict = my_trainer.create_all_rule_dicts(rel_idx, train_edges, idxs, mode, 
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    rule_dict, rule_sup_num_dict = my_model.create_all_rule_dicts(rel_idx, train_edges, idxs, mode, 
                                                                         pos_examples_idx)
     return rule_dict, rule_sup_num_dict
 
 
-def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_trainer, mode='total', 
+def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_model, mode='general', 
                                 pos_examples_idx=None):
     n_p = 24
     start = time.time()
     n_s = (len(train_edges)//2) // n_p
     output = Parallel(n_jobs=n_p)(
         delayed(my_create_all_rule_dicts)(i, n_s, n_p, this_rel, train_edges, 
-                                            para_ls_for_trainer, mode, 
+                                            para_ls_for_model, mode, 
                                             pos_examples_idx) for i in range(n_p)
     )
     end = time.time()
@@ -52,10 +52,10 @@ def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_trainer, mode
 
     rule_sup_num_dict = {}
     rule_dict = {}
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     for i in range(n_p):
-        rule_sup_num_dict = my_trainer.my_merge_dict(rule_sup_num_dict, output[i][1])
+        rule_sup_num_dict = my_model.my_merge_dict(rule_sup_num_dict, output[i][1])
         for k in output[i][0].keys():
             if k not in rule_dict.keys():
                 rule_dict[k] = output[i][0][k].copy()
@@ -63,21 +63,21 @@ def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_trainer, mode
                 rule_dict[k] = np.vstack((rule_dict[k], output[i][0][k]))
             rule_dict[k] = np.unique(rule_dict[k], axis=0)
 
-    for k in rule_dict.keys():
-        print('ruleLen', str(k), 'ruleShape', rule_dict[k].shape)
+    # for k in rule_dict.keys():
+    #     print('ruleLen', str(k), 'ruleShape', rule_dict[k].shape)
 
     return rule_dict, rule_sup_num_dict
 
 
-def do_calculate_rule_scores(rel_ls, para_ls_for_trainer, 
+def do_calculate_rule_scores(rel_ls, para_ls_for_model, 
                                 train_edges, const_pattern_ls, 
-                                mode='total', pos_examples_idx=None):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+                                mode='general', pos_examples_idx=None):
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     for rel in rel_ls:
-        rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, para_ls_for_trainer, 
+        rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, para_ls_for_model, 
                                                                     mode, pos_examples_idx)
-        my_trainer.write_all_rule_dicts(rel, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, mode)
+        my_model.write_all_rule_dicts(rel, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, mode)
 
 
 def explore_all_rules_dict(rel_idx):

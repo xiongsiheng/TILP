@@ -10,7 +10,7 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+
 
 
 
@@ -57,7 +57,7 @@ def do_normal_setting_for_dataset(dataset_name1, num_rel):
     return train_edges, valid_data, valid_data_inv, test_data, test_data_inv
 
 
-def split_dataset(dataset_using, dataset_name1, train_edges, num_rel):
+def split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=None):
     pos_examples_idx = []
     bg_train = []
     bg_pred = []
@@ -83,8 +83,23 @@ def split_dataset(dataset_using, dataset_name1, train_edges, num_rel):
     # else:
     #     print('bg_pred.txt does not exist')
 
+
+
     if len(pos_examples_idx) == 0:
-        pos_examples_idx = list(range(len(train_edges)))
+        pos_examples_idx = np.array(list(range(len(train_edges))))
+
+        if num_sample_per_rel is not None:
+            pos_examples_idx_sample = []
+            for rel_idx in range(num_rel):
+                cur_pos_examples_idx = pos_examples_idx[train_edges[:, 1] == rel_idx]
+                np.random.shuffle(cur_pos_examples_idx)
+                pos_examples_idx_sample.append(cur_pos_examples_idx[:num_sample_per_rel])
+
+            pos_examples_idx_sample = np.hstack(pos_examples_idx_sample)
+            pos_examples_idx = pos_examples_idx_sample
+
+        pos_examples_idx = pos_examples_idx.tolist()
+
     if len(bg_train) == 0:
         bg_train = train_edges.copy()
     if len(bg_pred) == 0:
@@ -411,9 +426,9 @@ def obtain_distribution_parameters_Wc(train_edges, dataset_using, overall_mode, 
             t_s_dict[(i,j)] = []
 
     for i in range(len(train_edges)):
-        if overall_mode == 'total':
+        if overall_mode == 'general':
             path = '../output/found_t_s/'+ dataset_using +'_train_query_'+str(i)+ '.json'
-        elif overall_mode in ['sub', 'imbalance', 'time_shift']:
+        elif overall_mode in ['few', 'biased', 'time_shifting']:
             path = '../output/found_t_s_'+ overall_mode +'/'+ dataset_using +'_train_query_'+str(i)+ '.json'
 
         if os.path.exists(path):

@@ -10,39 +10,39 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+from Models import TILP
 
 
-def my_predict(i, num_queries, num_processes, rel_idx, para_ls_for_trainer, train_edges, test_data, test_data_inv,
+def my_predict(i, num_queries, num_processes, rel_idx, para_ls_for_model, train_edges, test_data, test_data_inv,
                 const_pattern_ls, assiting_data, dist_pars, train_edges_total):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    rank_dict = my_trainer.predict_in_batch(i, num_queries, num_processes, rel_idx, train_edges, 
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    rank_dict = my_model.predict_in_batch(i, num_queries, num_processes, rel_idx, train_edges, 
                                             test_data, test_data_inv,
                                             const_pattern_ls, assiting_data, dist_pars, train_edges_total)
     return rank_dict
 
 
 
-def do_my_predict(rel_ls, para_ls_for_trainer, train_edges, test_data, test_data_inv, 
+def do_my_predict(rel_ls, para_ls_for_model, train_edges, test_data, test_data_inv, 
                     const_pattern_ls, assiting_data, dist_pars, train_edges_total):
 
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     for this_rel in rel_ls:
         num_processes = 24
 
         start = time.time()
         num_queries = len(test_data) // num_processes
         output = Parallel(n_jobs=num_processes)(
-            delayed(my_predict)(i, num_queries, num_processes, this_rel, para_ls_for_trainer, train_edges, 
+            delayed(my_predict)(i, num_queries, num_processes, this_rel, para_ls_for_model, train_edges, 
                                 test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges_total) 
                                 for i in range(num_processes)
         )
         end = time.time()
 
         total_time = round(end - start, 6)
-        print("Learning finished in {} seconds.".format(total_time))
+        print("Inference finished in {} seconds.".format(total_time))
 
         rank_dict = {}
 
@@ -145,7 +145,7 @@ def do_evaluate(rel_ls, dataset_using):
         path = '../output/rank_dict/'+ dataset_using + '_rank_dict_' + str(i) +'.json'
 
         if not os.path.exists(path):
-            print(path + ' not found')
+            # print(path + ' not found')
             continue
         with open(path,'r') as f1:
             x = json.load(f1)

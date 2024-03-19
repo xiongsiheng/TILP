@@ -10,7 +10,7 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+from Models import TILP
 from dataset_setting import *
 
 
@@ -48,7 +48,7 @@ def str_to_list(str1):
 
 def my_explore_queries_single(para_ls):
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode, train_edges, valid_data, valid_data_inv, rel_idx, j = para_ls
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
     if rel_idx < num_rel//2:
         valid_data_using = valid_data
@@ -57,13 +57,13 @@ def my_explore_queries_single(para_ls):
 
     res = {}
     if valid_data_using[j][1] == rel_idx:
-        res = my_trainer.explore_queries_v2(j, train_edges, valid_data, valid_data_using)
+        res = my_model.explore_queries_v2(j, train_edges, valid_data, valid_data_using)
     return res
 
 
 
-def my_explore_queries(rel_ls, f_save=True, mode='normal'):
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+def my_explore_queries(rel_ls, f_save=True, mode='general'):
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     res_dict_total = {}
     for rel_idx in rel_ls:
         if rel_idx < num_rel//2:
@@ -75,7 +75,7 @@ def my_explore_queries(rel_ls, f_save=True, mode='normal'):
         res_dict1 = {}
         for j in range(len(valid_data_using)):
             if valid_data_using[j][1] == rel_idx:
-                res = my_trainer.explore_queries_v3(j, valid_data_using)
+                res = my_model.explore_queries_v3(j, valid_data_using)
                 for num in res.keys():
                     for r in res[num]:
                         r = str(r)
@@ -87,10 +87,10 @@ def my_explore_queries(rel_ls, f_save=True, mode='normal'):
 
         res_dict_total[rel_idx] = res_dict
         if f_save:
-            if mode == 't_shift':
+            if mode == 'time_shifting':
                 with open('output/explore_res/'+dataset_using+'_explore_queries_'+str(rel_idx)+'_t_shift.json', 'w') as f:
                     json.dump(res_dict1, f)
-            elif mode in ['normal', 'imbalance']:
+            elif mode in ['general', 'biased']:
                 with open('output/explore_res/'+dataset_using+'_explore_queries_'+str(rel_idx)+'.json', 'w') as f:
                     json.dump(res_dict1, f)
 
@@ -319,9 +319,9 @@ def pure_random_walk(start_nodes, walk_len, facts1, walk_times):
 
 
 def create_query_class():
-    if overall_mode == 'time_shift':
+    if overall_mode == 'time_shifting':
         train_edges, valid_data, valid_data_inv, test_data, test_data_inv = do_temporal_shift_to_dataset(dataset_name1, num_rel)
-    elif overall_mode in ['total', 'sub', 'imbalance']:
+    elif overall_mode in ['general', 'few', 'biased']:
         train_edges, valid_data, valid_data_inv, test_data, test_data_inv = do_normal_setting_for_dataset(dataset_name1, num_rel)
 
     with open('../data/YAGO11k/YAGO_country_ent_dict.json') as f:

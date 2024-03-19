@@ -10,20 +10,20 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+from Models import TILP
 
 
 
-def my_apply(i, num_queries, num_processes, rel_idx, ver, train_edges, para_ls_for_trainer, 
+def my_apply(i, num_queries, num_processes, rel_idx, ver, train_edges, para_ls_for_model, 
                 path_name='', pos_examples_idx=None, time_shift_mode=0):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
+    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
 
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    my_trainer.apply_in_batch(i, num_queries, num_processes, rel_idx, ver, train_edges, 
+    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model.apply_in_batch(i, num_queries, num_processes, rel_idx, ver, train_edges, 
                                     path_name, pos_examples_idx, time_shift_mode)
 
 
-def do_my_find_rules(rel_ls, train_edges, para_ls_for_trainer, ver='normal', path_name='', 
+def do_my_find_rules(rel_ls, train_edges, para_ls_for_model, ver='normal', path_name='', 
                     pos_examples_idx=None, time_shift_mode=0):
     for this_rel in rel_ls:
         num_processes = 24
@@ -32,7 +32,7 @@ def do_my_find_rules(rel_ls, train_edges, para_ls_for_trainer, ver='normal', pat
         num_queries = (len(train_edges)//2) // num_processes
         output = Parallel(n_jobs=num_processes)(
             delayed(my_apply)(i, num_queries, num_processes, this_rel, ver, train_edges, \
-                            para_ls_for_trainer, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
+                            para_ls_for_model, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
         )
         end = time.time()
 

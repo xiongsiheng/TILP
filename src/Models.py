@@ -13,7 +13,7 @@ from scipy.stats import norm
 import tensorflow as tf
 
 
-class Trainer(object):
+class TILP(object):
     def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
         self.num_rel = num_rel
         self.num_pattern = num_pattern
@@ -25,11 +25,11 @@ class Trainer(object):
         elif self.dataset_using == 'YAGO':
             self.num_entites = 10623
 
-        self.num_training_samples = 5000
+        self.num_train_samples_max = 100000
         self.num_paths_max = 20
         self.num_path_sampling = 5
         self.batch_size = 128
-        self.num_training_min = 10
+        self.num_epoch_min = 10
         self.save_weights = True
 
         self.max_explore_len = num_ruleLen
@@ -43,111 +43,21 @@ class Trainer(object):
 
         self.f_non_Markovian = 1
         self.f_Wc_ts = 1
-        self.max_rulenum = {1:100, 2:150, 3:300, 4:450, 5:1200}
+        self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
 
-        if self.overall_mode == 'total':
+        self.gamma_shallow = 0.8
+        self.shallow_score_length = 200
+
+        if self.overall_mode == 'general':
             self.weights_savepath = '../output/train_weights/train_weights_' + self.dataset_using
-        elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
             self.weights_savepath = '../output/train_weights_'+ self.overall_mode +'/train_weights_'\
                                      + self.dataset_using
 
 
 
-    def TRL_model_training(self, targ_rel_ls, num_training, train_edges, const_pattern_ls, 
-                                mode='total', train_idx = None, path_name=''):
-
-        var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen = self.build_rnn_graph()
-
-        rel_dict = {}
-        TR_dict = {}
-        alpha_dict = {}
-
-        for l in range(self.max_explore_len):
-            rel_dict[l] = tf.placeholder(tf.int64, shape=(None, l+1))
-            TR_dict[l] = tf.placeholder(tf.int64, shape=(None, l+1))
-            alpha_dict[l] = tf.placeholder(tf.float32, shape=(None, 1))
-
-        query_score = self.calculate_TRL_score(rel_dict, TR_dict, alpha_dict, var_attn_rel_ls, 
-                                                            var_attn_TR_ls, var_attn_ruleLen)
-        final_loss = -tf.math.log(query_score)
-
-        optimizer = tf.train.AdamOptimizer(0.001)
-        gvs = optimizer.compute_gradients(final_loss)
-        optimizer_step = optimizer.apply_gradients(gvs)
-
-        feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, final_loss, optimizer_step]
-        loss_avg_old = 100
-
-        res_attn_rel_dict = {}
-        res_attn_TR_dict = {}
-        res_attn_ruleLen_dict = {}
-
-
-        init = tf.global_variables_initializer()
-        with tf.Session() as sess:
-            sess.run(init)
-            for cnt in range(num_training):
-                loss_avg = 0.
-                num_samples = 0.
-
-                y = list(range(len(train_edges)))
-                if train_idx:
-                    y = train_idx
-
-                np.random.shuffle(y)
-
-                for idx in y:
-                    if train_edges[idx][1] in targ_rel_ls:
-                        rel_idx = train_edges[idx][1]
-                        cur_input_dict = {}
-                        cur_input_dict[self.queries] = [[rel_idx] * (self.num_ruleLen-1) + [self.num_rel]]
-                        x, f_valid = self.prepare_inputs(idx, const_pattern_ls, 0)
-                        if not f_valid:
-                            continue
-
-                        for l in range(self.max_explore_len):
-                            cur_input_dict[rel_dict[l]] = x[l]['rel']
-                            cur_input_dict[TR_dict[l]] = x[l]['TR']
-                            cur_input_dict[alpha_dict[l]] = x[l]['alpha']
-
-                        res_attn_rel_dict[rel_idx], res_attn_TR_dict[rel_idx], \
-                                res_attn_ruleLen_dict[rel_idx], loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
-
-                        loss_avg += loss
-                        num_samples += 1
-
-                if num_samples == 0:
-                    print('num_samples = 0')
-                    return np.array([0])
-
-                loss_avg = loss_avg/num_samples
-
-                print(str(cnt)+ ', loss:', loss_avg)
-
-
-                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_training_min) and (loss_avg > loss_avg_old):
-                    break
-                loss_avg_old = copy.copy(loss_avg)
-
-
-        for rel_idx in targ_rel_ls:
-            my_res = {}
-            my_res['attn_rel_ls'] = self.my_convert_to_list(res_attn_rel_dict[rel_idx])
-            my_res['attn_TR_ls'] = self.my_convert_to_list(res_attn_TR_dict[rel_idx])
-            my_res['attn_ruleLen'] = res_attn_ruleLen_dict[rel_idx].tolist()
-
-            # print('processing rel ' + str(rel_idx))
-
-            if self.save_weights:
-                cur_path = self.get_weights_savepath_v2(rel_idx)
-                with open(cur_path, 'w') as f:
-                    json.dump(my_res, f)
-
-        return loss_avg
-
-
-    def TRL_model_training_v2(self, targ_rel_ls, num_training, train_edges, const_pattern_ls, 
-                                mode='total', train_idx = None, path_name=''):
+    def TRL_model_training_v2(self, targ_rel_ls, num_epoch, train_edges, const_pattern_ls, 
+                                mode='general', train_idx = None, path_name=''):
         if self.f_non_Markovian:
             var_attn_rel_ls, var_attn_TR_ls, var_attn_TR_prime_ls, var_attn_ruleLen = self.build_rnn_graph()
         else:
@@ -172,16 +82,43 @@ class Trainer(object):
             query_score = self.calculate_TRL_score(rel_dict, TR_dict, alpha_dict, var_attn_rel_ls, 
                                                                 var_attn_TR_ls, var_attn_ruleLen)
 
+
+        self.shallow_rule_dict = {}
+
+        valid_train_idx = []
+        for idx in range(len(train_edges)):
+            if self.overall_mode == 'general':
+                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+
+            if not os.path.exists(path):
+                continue
+            valid_train_idx.append(idx)
+
+
+        for rel_idx in targ_rel_ls:
+            batch_idx = []
+            for idx in valid_train_idx:
+                if train_edges[idx][1] == rel_idx:
+                    batch_idx.append(idx)
+            self.collect_rules(batch_idx, rel_idx)
+
+
+        query_score_shallow, var_attn_shallow_score = self.build_shallow_score()
+        query_score = (1-self.gamma_shallow) * query_score + (self.gamma_shallow) * query_score_shallow
+
+
         final_loss = -tf.math.log(query_score)
 
-        optimizer = tf.train.AdamOptimizer(0.001)
+        optimizer = tf.train.AdamOptimizer()
         gvs = optimizer.compute_gradients(final_loss)
         optimizer_step = optimizer.apply_gradients(gvs)
 
         if self.f_non_Markovian:
-            feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_TR_prime_ls, var_attn_ruleLen, final_loss, optimizer_step]
+            feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_TR_prime_ls, var_attn_ruleLen, var_attn_shallow_score, final_loss, optimizer_step]
         else:
-            feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, final_loss, optimizer_step]
+            feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, var_attn_shallow_score, final_loss, optimizer_step]
         loss_avg_old = 100
 
         res_attn_rel_dict = {}
@@ -189,19 +126,22 @@ class Trainer(object):
         res_attn_TR_prime_dict = {}
         res_attn_ruleLen_dict = {}
 
+
+
         init = tf.global_variables_initializer()
+        loss_avg_ls = []
         with tf.Session() as sess:
             sess.run(init)
-            for cnt in range(num_training):
+            for cnt in range(num_epoch):
                 loss_avg = 0.
                 num_samples = 0.
 
                 y = list(range(len(train_edges)))
-                if train_idx:
-                    y = train_idx
+                if len(valid_train_idx)>0:
+                    y = valid_train_idx
 
                 np.random.shuffle(y)
-                y = y[: self.num_training_samples]
+                y = y[: self.num_train_samples_max]
 
                 for rel_idx in targ_rel_ls:
                     batch_idx = []
@@ -217,7 +157,8 @@ class Trainer(object):
                         input_idx_ls = batch_idx[i*self.batch_size:(i+1)*self.batch_size]
                         cur_input_dict = {}
                         cur_input_dict[self.queries] = [[rel_idx] * (self.num_ruleLen-1) + [self.num_rel]]
-                        x, f_valid = self.prepare_inputs(input_idx_ls, const_pattern_ls, self.f_non_Markovian)
+                        x, f_valid, shallow_rule_idx, shallow_rule_alpha = self.prepare_inputs(input_idx_ls, const_pattern_ls, rel_idx, self.f_non_Markovian)
+
                         if not f_valid:
                             continue
 
@@ -226,12 +167,16 @@ class Trainer(object):
                             cur_input_dict[TR_dict[l]] = x[l]['TR']
                             cur_input_dict[alpha_dict[l]] = x[l]['alpha']
 
+                        cur_input_dict[self.rel_idx] = [rel_idx]
+                        cur_input_dict[self.shallow_rule_idx] = shallow_rule_idx
+                        cur_input_dict[self.shallow_rule_alpha] = shallow_rule_alpha
+
                         if self.f_non_Markovian:
                             res_attn_rel_dict[rel_idx], res_attn_TR_dict[rel_idx], res_attn_TR_prime_dict[rel_idx], \
-                                res_attn_ruleLen_dict[rel_idx], loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
+                                res_attn_ruleLen_dict[rel_idx], res_attn_shallow_score, loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
                         else:
                             res_attn_rel_dict[rel_idx], res_attn_TR_dict[rel_idx], \
-                                    res_attn_ruleLen_dict[rel_idx], loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
+                                    res_attn_ruleLen_dict[rel_idx], res_attn_shallow_score, loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
 
                         loss_avg += loss
                         num_samples += 1
@@ -242,15 +187,19 @@ class Trainer(object):
 
                 loss_avg = loss_avg/num_samples
 
-                print(str(cnt)+ ', loss:', loss_avg)
+                if cnt % 20 == 0:
+                    print(str(cnt)+ ', loss:', loss_avg)
 
 
-                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_training_min) and (loss_avg > loss_avg_old):
+                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
+                loss_avg_ls.append(loss_avg)
 
 
         for rel_idx in targ_rel_ls:
+            if rel_idx not in res_attn_rel_dict:
+                continue
             my_res = {}
             my_res['attn_rel_ls'] = self.my_convert_to_list(res_attn_rel_dict[rel_idx])
             my_res['attn_TR_ls'] = self.my_convert_to_list(res_attn_TR_dict[rel_idx])
@@ -258,94 +207,17 @@ class Trainer(object):
                 my_res['attn_TR_prime_ls'] = self.my_convert_to_list(res_attn_TR_prime_dict[rel_idx])
             my_res['attn_ruleLen'] = res_attn_ruleLen_dict[rel_idx].tolist()
 
-            # print('processing rel ' + str(rel_idx))
+            my_res['shallow_score'] = res_attn_shallow_score[rel_idx].tolist()
+            my_res['shallow_rule_dict'] = self.shallow_rule_dict[rel_idx]
+
 
             if self.save_weights:
                 cur_path = self.get_weights_savepath_v2(rel_idx)
                 with open(cur_path, 'w') as f:
                     json.dump(my_res, f)
 
-        return loss_avg
+        return loss_avg_ls
 
-
-    def train_tfm(self, rel_idx_ls, num_training, train_edges, dist_pars):
-        p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
-        var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm = self.variable_init_tfm()
-
-        query_rel = tf.placeholder(tf.int64, shape=(None,))
-        query_rel_one_hot = tf.placeholder(tf.float32, shape=(None,))
-        related_rel_dict = tf.placeholder(tf.int64, shape=(None,))
-        h_rec = tf.placeholder(tf.float32, shape=(None,))
-        h_order = tf.placeholder(tf.float32, shape=(None,))
-        h_pair = tf.placeholder(tf.float32, shape=(None,))
-        f_exist = tf.placeholder(tf.float32, shape=(3,))
-
-        query_score = self.calculate_tfm_score(query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, 
-                                              f_exist, var_W_rec, var_b_rec,
-                                              var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm)
-        final_loss = -tf.math.log(query_score)
-
-        optimizer = tf.train.AdamOptimizer(0.001)
-        gvs = optimizer.compute_gradients(final_loss)
-        optimizer_step = optimizer.apply_gradients(gvs)
-
-        feed_list = [var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, \
-                                    var_b_pair_ls, gamma_tfm, final_loss, optimizer_step]
-        loss_avg_old = 100
-
-        init = tf.global_variables_initializer()
-        with tf.Session() as sess:
-            sess.run(init)
-            for cnt in range(num_training):
-                loss_avg = 0.
-                num_samples = 0.
-
-                y = list(range(len(train_edges)))
-                np.random.shuffle(y)
-
-                for idx in y:
-                    if train_edges[idx][1] in rel_idx_ls:
-                        cur_input_dict = {}
-                        x = self.prepare_inputs_tfm(train_edges, idx, p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
-                        cur_input_dict[query_rel] = x['query_rel']
-                        cur_input_dict[query_rel_one_hot] = x['query_rel_one_hot']
-                        cur_input_dict[related_rel_dict] = x['related_rel_dict']
-                        cur_input_dict[h_rec] = x['h_rec']
-                        cur_input_dict[h_order] = x['h_order']
-                        cur_input_dict[h_pair] = x['h_pair']
-                        cur_input_dict[f_exist] = x['f_exist']
-
-                        res_W_rec, res_b_rec, res_W_order_ls, res_b_order_ls, res_W_pair_ls, \
-                                res_b_pair_ls, res_gamma_tfm, loss, _ = sess.run(feed_list, feed_dict=cur_input_dict)
-
-                        loss_avg += loss
-                        num_samples += 1
-
-                if num_samples == 0:
-                    print('num_samples = 0', rel_idx)
-                    return np.array([0])
-
-                loss_avg = loss_avg/num_samples
-
-                print(str(cnt)+ ', loss:', loss_avg)
-
-                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_training_min) and (loss_avg > loss_avg_old):
-                    break
-                loss_avg_old = copy.copy(loss_avg)
-
-        my_res = {}
-        my_res['W_order_ls'] = self.my_convert_to_list(res_W_order_ls)
-        my_res['W_pair_ls'] = self.my_convert_to_list(res_W_pair_ls)
-        my_res['gamma_tfm'] = res_gamma_tfm.tolist()
-
-
-        if self.save_weights:
-            cur_path = '../output/train_weights_tfm/train_weights_'+ self.dataset_using +'_tfm.json'
-
-            with open(cur_path, 'w') as f:
-                json.dump(my_res, f)
-
-        return loss_avg
 
 
     def train_tfm_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
@@ -384,7 +256,7 @@ class Trainer(object):
 
                 y = list(range(len(train_edges)))
                 np.random.shuffle(y)
-                y = y[:self.num_training_samples]
+                y = y[:self.num_train_samples_max]
 
                 batch_idx = []
                 for idx in y:
@@ -422,7 +294,7 @@ class Trainer(object):
 
                 print(str(cnt)+ ', loss:', loss_avg)
 
-                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_training_min) and (loss_avg > loss_avg_old):
+                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
 
@@ -473,7 +345,7 @@ class Trainer(object):
 
                 y = list(range(len(train_edges)))
                 np.random.shuffle(y)
-                y = y[:self.num_training_samples]
+                y = y[:self.num_train_samples_max]
 
                 batch_idx = []
                 for idx in y:
@@ -509,7 +381,7 @@ class Trainer(object):
 
                 print(str(cnt)+ ', loss:', loss_avg)
 
-                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_training_min) and (loss_avg > loss_avg_old):
+                if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
 
@@ -529,7 +401,8 @@ class Trainer(object):
 
 
     def apply_single_rule(self, st_node, query_int, rule, rule_Len, facts, 
-                                mode=0, f_print=0, return_walk=0, targ_node=None, return_edges=0):
+                                mode=0, f_print=0, return_walk=0, targ_node=None, return_edges=0, fast_sampling=False):
+        beam_width = 100
         rel_ls = rule[:rule_Len]
         pattern_ls = rule[rule_Len:]
 
@@ -542,6 +415,10 @@ class Trainer(object):
         for i in range(rule_Len):
             y = facts[np.isin(facts[:, 0], x) & (facts[:, 1] == rel_ls[i]) & \
                                 (facts[:, 3] == pattern_ls[i])]
+            # print(y.shape)
+            if fast_sampling:
+                np.random.shuffle(y)
+                y = facts[:beam_width, :]
             if len(y) == 0:
                 if return_edges:
                     return []
@@ -594,12 +471,23 @@ class Trainer(object):
 
 
 
-    def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0):
+    def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, ver='normal'):
         if idx_ls:
             idx_ls1 = idx_ls
         else:
             idx_ls1 = range(len(train_edges))
+        
         for idx in idx_ls1:
+            if self.overall_mode == 'general':
+                path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+                path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+                path1 = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
+                path2 = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+
+            if os.path.exists(path1):
+                continue
+
             if isinstance(rel_idx, int):
                 if not train_edges[idx][1] == rel_idx:
                     continue
@@ -612,7 +500,7 @@ class Trainer(object):
 
             masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
 
-            if self.overall_mode == 'time_shift':
+            if self.overall_mode == 'time_shifting':
                 masked_facts = masked_facts[masked_facts[:,3]<=line[3]]
 
             edges_simp = masked_facts[:,[0,2]]
@@ -669,6 +557,7 @@ class Trainer(object):
                             y = cur_ent_walk_res[:, [3*i+1 for i in range(num)] + [3*i+2 for i in range(num)]]
                         else:
                             y = cur_ent_walk_res[:, [5*i+1 for i in range(num)] + [5*i+2 for i in range(num)]]
+                            # TR(t_i, t_j)
                             for i in range(num-1):
                                 for j in range(i+1, num):
                                     y = np.hstack((y, self.obtain_tmp_rel(cur_ent_walk_res[:, 5*i+3:5*i+5], 
@@ -678,120 +567,19 @@ class Trainer(object):
                             if time_shift_mode in [-1, 1]:
                                 if time_shift_mode in r[num:num*2]:
                                     continue
-                            cur_dict = self.apply_single_rule(line[0], line[3:], r, num, x)
-                            prob = 0
-                            if line[2] in cur_dict.keys():
-                                prob = cur_dict[line[2]]
+
+                            if ver == 'normal':
+                                cur_dict = self.apply_single_rule(line[0], line[3:], r, num, x)
+                                prob = 0
+                                if line[2] in cur_dict.keys():
+                                    prob = cur_dict[line[2]]
+                            else:
+                                prob = 1.
+
                             if num not in rule_dict:
                                 rule_dict[num] = []
                             rule_dict[num].append({'rule':r, 'alpha':prob})
 
-            if self.f_Wc_ts:
-                for k1 in t_s_dict.keys():
-                    if len(t_s_dict[k1])>0:
-                        idx1 = np.argmin(np.abs(t_s_dict[k1]))
-                        t_s_dict[k1] = t_s_dict[k1][idx1]
-                    else:
-                        t_s_dict[k1] = None
-
-            if self.overall_mode == 'total':
-                path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-                path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-            elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
-                path1 = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
-                path2 = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-
-            with open(path1, 'w') as f:
-                json.dump(rule_dict, f)
-
-            if self.f_Wc_ts:
-                with open(path2, 'w') as f:
-                    json.dump(t_s_dict, f)
-
-        return 
-
-
-    def apply_fast_ver(self, train_edges, rel_idx=None, idx_ls=None, time_shift_mode=0):
-        if idx_ls:
-            idx_ls1 = idx_ls
-        else:
-            idx_ls1 = range(len(train_edges))
-        for idx in idx_ls1:
-            if isinstance(rel_idx, int):
-                if not train_edges[idx][1] == rel_idx:
-                    continue
-
-            line = train_edges[idx]
-
-            masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
-
-            edges_simp = masked_facts[:,[0,2]]
-            edges_simp = np.unique(edges_simp, axis=0)
-            edges_simp = edges_simp.astype(int)
-            pos = list(edges_simp)
-            rows, cols = zip(*pos)
-
-            adj_mat = np.zeros((self.num_entites, self.num_entites))
-            adj_mat[rows, cols] = 1
-
-            cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
-
-            if self.f_Wc_ts:
-                t_s_dict = {}
-                for k1 in range(self.num_rel):
-                    t_s_dict[k1] = []
-
-            rule_dict = {}
-            if len(cur_num_hops1) > 0:
-                cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
-
-                x = self.obtain_tmp_rel_v2(masked_facts[:, 3:], line[3:]).reshape((-1,1))
-                if not self.f_non_Markovian:
-                    x = np.hstack((masked_facts[:, :3], x))
-                else:
-                    x = np.hstack((masked_facts[:, :3], x, masked_facts[:, 3:]))
-                x = np.unique(x, axis=0)
-
-                for num in cur_num_hops1:
-                    path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-                    walk_edges = []
-                    for i in range(num):
-                        related_facts = x[np.isin(x[:,0], path_ls[i]) & np.isin(x[:,2], path_ls[i+1])]
-
-                        if not self.f_non_Markovian:
-                            walk_edges.append(related_facts[:,[0,1,3,2]])
-                        else:
-                            walk_edges.append(related_facts[:,[0,1,3,4,5,2]])
-
-                        if self.f_Wc_ts:
-                            z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                            for z1 in z:
-                                t_s_dict[z1[1]].append(z1[3]-line[3])
-
-                    if not self.f_non_Markovian:
-                        cur_ent_walk_res = self.get_walks_c4(walk_edges, ["entity_" , "rel_", "tmpRel_"]).to_numpy()
-                    else:
-                        cur_ent_walk_res = self.get_walks_c4(walk_edges, ["entity_" , "rel_", "tmpRel_", "ts_", "te_"]).to_numpy()
-
-                    if len(cur_ent_walk_res)>0:
-                        if not self.f_non_Markovian:
-                            y = cur_ent_walk_res[:, [3*i+1 for i in range(num)] + [3*i+2 for i in range(num)]]
-                        else:
-                            y = cur_ent_walk_res[:, [5*i+1 for i in range(num)] + [5*i+2 for i in range(num)]]
-                            for i in range(num-1):
-                                for j in range(i+1, num):
-                                    y = np.hstack((y, self.obtain_tmp_rel(cur_ent_walk_res[:, 5*i+3:5*i+5], 
-                                                            cur_ent_walk_res[:, 5*j+3:5*j+5]).reshape((-1,1))))
-
-                        y = np.unique(y, axis=0).tolist()
-                        for r in y:
-                            if time_shift_mode in [-1, 1]:
-                                if time_shift_mode in r[num:num*2]:
-                                    continue
-                            if num not in rule_dict:
-                                rule_dict[num] = []
-                            rule_dict[num].append({'rule':r, 'alpha': 1.})
-
 
             if self.f_Wc_ts:
                 for k1 in t_s_dict.keys():
@@ -801,30 +589,23 @@ class Trainer(object):
                     else:
                         t_s_dict[k1] = None
 
-            if self.overall_mode == 'total':
-                path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-                path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-            elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
-                path1 = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-                path2 = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-
             with open(path1, 'w') as f:
                 json.dump(rule_dict, f)
+
 
             if self.f_Wc_ts:
                 with open(path2, 'w') as f:
                     json.dump(t_s_dict, f)
 
         return 
+
 
 
     def apply_in_batch(self, i, num_queries, num_processes, rel_idx, ver, train_edges, path_name='', 
                             pos_examples_idx=None, time_shift_mode=0):
         queries_idx = self.create_training_idx_in_batch(i, num_queries, num_processes, rel_idx, train_edges)
-        if ver == 'normal':
-            self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode)
-        elif ver == 'fast':
-            self.apply_fast_ver(train_edges, rel_idx, queries_idx, time_shift_mode)
+        self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode, ver=ver)
+
         return 
 
 
@@ -845,7 +626,7 @@ class Trainer(object):
         cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
 
         ent_walk_res = {}
-        print(line)
+        # print(line)
         if len(cur_num_hops1) > 0:
             cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
 
@@ -914,32 +695,6 @@ class Trainer(object):
         return 
 
 
-    def explore_queries(self, train_edges, test_data):
-        edges_simp = train_edges[:,[0,2]]
-        edges_simp = np.unique(edges_simp, axis=0)
-        edges_simp = edges_simp.astype(int)
-        pos = list(edges_simp)
-        rows, cols = zip(*pos)
-
-        adj_mat = np.zeros((self.num_entites, self.num_entites))
-        adj_mat[rows, cols] = 1
-
-        res = {}
-        cnt = 0
-        for line in test_data:
-            print(cnt)
-            cnt += 1
-            query_rel = line[1]
-            cur_num_hops1, _ = self.BFS_mat_ver(line[0], adj_mat, self.num_entites, line[2])
-            if query_rel in res.keys():
-                res[query_rel].append(cur_num_hops1)
-            else:
-                res[query_rel] = [cur_num_hops1]
-
-        for k in res.keys():
-            res[k] = Counter(res[k])
-        return res
-
 
     def explore_queries_v2(self, j, train_edges, test_data, test_data_using=None):
         if not isinstance(test_data_using, np.ndarray):
@@ -986,17 +741,17 @@ class Trainer(object):
 
 
     def predict(self, rel_idx, train_edges, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges_total,
-                    queries_idx = None, mode='total', known_facts_int=[5, 5], selected_rules=None, pure_guessing=True,
+                    queries_idx = None, mode='general', known_facts_int=[0, 0], selected_rules=None, pure_guessing=True,
                     format_extra_len=0, f_predicting=0):
 
-        if self.overall_mode == 'total':
+        if self.overall_mode == 'general':
             f_name = 'learned_rules'
-        elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
             f_name = 'learned_rules_' + self.overall_mode
         path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
 
         if not os.path.exists(path):
-            print(path + ' not found')
+            # print(path + ' not found')
             rule_dict1 = {}
             if not pure_guessing:
                 return {}
@@ -1098,7 +853,7 @@ class Trainer(object):
 
     def predict_in_batch(self, i, num_queries, num_processes, rel_idx, train_edges, test_data, test_data_inv, 
                             const_pattern_ls, assiting_data, dist_pars, train_edges_total, rules_dict=None, 
-                            rule_scores=None, mode='total', known_facts_int= [5, 5], selected_rules=None,
+                            rule_scores=None, mode='general', known_facts_int= [0, 0], selected_rules=None,
                             format_extra_len=0, f_predicting=0):
         n_t = len(test_data)
         num_rest_queries = n_t - (i + 1) * num_queries
@@ -1159,47 +914,6 @@ class Trainer(object):
 
 
 
-    def apply_specific_rules(self, rule_walks, mode, rule_supple):
-        dur_list = [(0,6), (6,11), (11,21), (21,10000)]
-        if 'dur' in mode:
-            mode_t = []
-            for i in range(rule_walks.shape[1]//2):
-                dur = rule_walks[:,2*i+1] - rule_walks[:,2*i]
-                res = dur.copy()
-                for j in range(len(dur_list)):
-                    res[(dur>=dur_list[j][0]) & (dur<dur_list[j][1])] = j
-                mode_t.append(res.reshape(-1,1))
-            if len(mode_t) == 1:
-                mode_t = mode_t[0]
-            else:
-                mode_t = np.hstack(mode_t)
-            print(mode_t)
-            mode_t = mode_t.tolist()
-
-            c = Counter([str(t) for t in mode_t])
-            c = dict(c)
-            self.print_dict(c)
-            self.print_dict(rule_supple)
-            for k in c.keys():
-                c[k] = 1/c[k]
-                if k in rule_supple.keys():
-                    c[k] = c[k] * rule_supple[k]
-                else:
-                    c[k] = c[k] * 1e-5
-
-            self.print_dict(c)
-            cur_dict = {}
-            for (i, node) in enumerate(rule_walks[:,-1]):
-                if node not in cur_dict.keys():
-                    cur_dict[node] = 0
-                cur_dict[node] += c[str(mode_t[i])]
-
-            print(rule_walks)
-            print(cur_dict)
-
-        return cur_dict
-
-
     def apply_specific_rules_v2(self, rule_walks, sp_rules):
         res_dict = {}
         for sp_r in sp_rules:
@@ -1234,6 +948,22 @@ class Trainer(object):
             self.rnn_query_embedding_params_ls.append(query_embedding_params)
 
         return rnn_inputs_ls
+
+
+    def build_shallow_score(self):
+        self.shallow_rule_idx = tf.placeholder(tf.float32, shape=(None, self.shallow_score_length))
+        self.shallow_rule_alpha = tf.placeholder(tf.float32, shape=(None, self.shallow_score_length))
+        self.shallow_score = tf.Variable(np.random.randn(
+                                            self.num_rel,
+                                            self.shallow_score_length), 
+                                            dtype=tf.float32)
+
+        attn_shallow_score = tf.nn.softmax(self.shallow_score, axis=1)
+        self.rel_idx = tf.placeholder(tf.int64, shape=(None, ))
+        score = tf.nn.embedding_lookup(attn_shallow_score, self.rel_idx) * self.shallow_rule_idx * self.shallow_rule_alpha
+        score = tf.reduce_sum(score, 1)
+        return score, attn_shallow_score
+
 
 
     def build_rnn_graph(self):
@@ -1321,39 +1051,6 @@ class Trainer(object):
 
 
 
-    def BFS_mat_ver(self, st_node, adj_mat, num_nodes, targ_node):
-        node_st = np.zeros((num_nodes, 1))
-        node_st[st_node] = 1
-        res = node_st.copy()
-
-        idx_ls_t = set([st_node])
-        idx_ls_t_len = 1
-
-        new_nodes_ls =[[st_node]]
-        num_hops = -1
-        for i in range(20):
-            res = np.dot(adj_mat, res)
-            res[res>1] = 1
-            idx_ls = np.where(res==1)[0]
-            
-            # cur_new_idx_ls = list(set(idx_ls)-set(idx_ls_old))
-            cur_new_idx_ls = idx_ls.copy()
-            if len(cur_new_idx_ls) > 0:
-                new_nodes_ls.append(cur_new_idx_ls)
-
-            if targ_node in idx_ls:
-                num_hops = i+1
-                break
-
-            idx_ls_t = idx_ls_t.union(set(idx_ls))
-
-            if len(idx_ls_t) == idx_ls_t_len:
-                break
-
-            idx_ls_t_len = len(idx_ls_t)
-
-        return num_hops, new_nodes_ls
-
     def BFS_mat_ver2(self, st_node, adj_mat, num_nodes, targ_node, max_len):
         node_st = np.zeros((num_nodes, 1))
         node_st[int(st_node)] = 1
@@ -1380,6 +1077,24 @@ class Trainer(object):
         return num_hops, new_nodes_ls
 
 
+    def count_lists(self, input_list):
+        # Convert each sublist to a tuple so they can be counted
+        tuples_list = [tuple(sublist) for sublist in input_list]
+
+        # Count the occurrences of each tuple
+        tuples_count = Counter(tuples_list)
+
+        # Filter tuples that occur more than once and convert them back into lists, pairing with their counts
+        output = [(item, count) for item, count in tuples_count.items()]
+
+        sorted_list = sorted(output, key=lambda x: x[1], reverse=True)
+        # Extracting the first element of each tuple for the output
+        output = [item[0] for item in sorted_list]
+
+        return output
+
+
+
     def calculate_query_score(self, edges, ent_walk_res, query_int, var_prob_rel_ls, var_prob_pattern_ls):
         path_len = ent_walk_res.shape[1]-1
         prob_path_ls = []
@@ -1387,49 +1102,19 @@ class Trainer(object):
             cur_prob_path = tf.constant(1.)
             for k in range(path_len):
                 rel, tmp_rel = self.obtain_edges_given_nodes(edges, ent_walk_res[l,k], ent_walk_res[l,k+1], query_int)
-                # print(rel)
-                # print(tmp_rel)
 
                 prob_rel = tf.nn.embedding_lookup(var_prob_rel_ls[path_len-1][k], rel)
                 prob_pattern = tf.nn.embedding_lookup(var_prob_pattern_ls[path_len-1][k], tmp_rel)
-
-                # print(var_prob_rel_ls[path_len-1][k].shape)
-                # print(var_prob_pattern_ls[path_len-1][k].shape)
-
-                # print(prob_rel)
-                # print(prob_pattern)
-
-                cur_prob_path = cur_prob_path * tf.reduce_sum(tf.nn.softmax(prob_rel * prob_pattern) * prob_rel * prob_pattern, 0)
-
-                # print(cur_prob_path)
-
-            prob_path_ls.append(cur_prob_path)
-
-        prob_path = tf.concat(prob_path_ls, 0)
-        # print(prob_path)
-        prob_query = tf.reduce_sum(tf.nn.softmax(prob_path) * prob_path, 0)
-        # print(prob_query)
-
-        return prob_query
-
-
-    def calculate_query_score_fun_ver(self, rel_dict, tmp_rel_dict, mask, path_len, var_prob_rel_ls, var_prob_pattern_ls):
-        prob_path_ls = []
-        for l in range(mask.shape[0]):
-            cur_prob_path = tf.constant(1.)
-            for k in range(path_len):
-                prob_rel = tf.nn.embedding_lookup(var_prob_rel_ls[k], rel_dict[l][k])
-                prob_pattern = tf.nn.embedding_lookup(var_prob_pattern_ls[k], tmp_rel_dict[l][k])
-
                 cur_prob_path = cur_prob_path * tf.reduce_sum(tf.nn.softmax(prob_rel * prob_pattern) * prob_rel * prob_pattern, 0)
 
             prob_path_ls.append(cur_prob_path)
 
         prob_path = tf.concat(prob_path_ls, 0)
-        prob_path += mask
         prob_query = tf.reduce_sum(tf.nn.softmax(prob_path) * prob_path, 0)
 
         return prob_query
+
+
 
     def calculate_query_score_fun_ver2(self, rel_dict, tmp_rel_dict, rPro_dict, var_prob_rel_ls, var_prob_pattern_ls, var_prob_ruleLen):
         prob = tf.constant(0.)
@@ -1488,32 +1173,6 @@ class Trainer(object):
 
         return score
 
-
-    def calculate_tfm_score(self, query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, f_exist, 
-                                  var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls,
-                                  gamma_tfm):
-        # x1 = tf.nn.embedding_lookup(var_W_rec, query_rel) * h_rec + tf.nn.embedding_lookup(var_b_rec, query_rel)
-        x1 = h_rec
-
-        x2 = tf.constant(0.)
-        for i in range(self.num_rel):
-            x2_W = tf.nn.embedding_lookup(var_W_order_ls[i], related_rel_dict)
-            x2_W = tf.nn.softmax(x2_W, axis=0)
-            # x2_b = tf.nn.embedding_lookup(var_b_order_ls[i], related_rel_dict)
-            # x2 += tf.reduce_sum(x2_W * (h_order + x2_b), 0) * query_rel_one_hot[i]
-            x2 += tf.reduce_sum(x2_W * h_order, 0) * query_rel_one_hot[i]
-
-
-        x3 = tf.constant(0.)
-        for i in range(self.num_rel):
-            x3_W = tf.nn.embedding_lookup(var_W_pair_ls[i], related_rel_dict)
-            x3_W = tf.nn.softmax(x3_W, axis=0)
-            # x3_b = tf.nn.embedding_lookup(var_b_pair_ls[i], related_rel_dict)
-            # x3 += tf.reduce_sum(x3_W * (h_pair + x3_b), 0) * query_rel_one_hot[i]
-            x3 += tf.reduce_sum(x3_W * h_pair, 0) * query_rel_one_hot[i]
-
-        tfm_score = gamma_tfm[0]*x1*f_exist[0] + gamma_tfm[1]*x2*f_exist[1] + gamma_tfm[2]*x3*f_exist[2]
-        return tfm_score
 
 
     def calculate_tfm_score_v2(self, query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, f_exist, mask,
@@ -1616,25 +1275,6 @@ class Trainer(object):
         return prob
 
 
-    def check_path_rep(self, ent_walk_res):
-        x = ent_walk_res.shape[1]
-        for i in range(x-1):
-            for j in range(i+1, x):
-                ent_walk_res = ent_walk_res[np.invert(ent_walk_res[:,i] == ent_walk_res[:,j])]
-        return ent_walk_res
-
-    def check_path_rep_v2(self, ent_walk_res, path_len):
-        # print(ent_walk_res)
-        for i in range(path_len-1):
-            for j in range(i+1, path_len):
-                ent_walk_res = ent_walk_res[np.invert(
-                                                (self.get_inv_idx(num_rel//2, ent_walk_res[:,4*i+1]) == ent_walk_res[:,4*j+1])\
-                                                    & (ent_walk_res[:,4*i] == ent_walk_res[:,4*j+4])\
-                                                    & (ent_walk_res[:,4*i+4] == ent_walk_res[:,4*j])\
-                                                    & np.all(ent_walk_res[:,4*i+2:4*i+4] == ent_walk_res[:,4*j+2:4*j+4], axis=1)
-                                                        )]
-        # print(ent_walk_res)
-        return ent_walk_res
 
     def check_path_rep_v3(self, ent_walk_res, path_len, rel_ls):
         # print(ent_walk_res)
@@ -1669,11 +1309,11 @@ class Trainer(object):
         return x
 
 
-    def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, mode='total'):
+    def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, mode='general'):
         cur_path = self.get_weights_savepath_v2(rel_idx)
 
         if not os.path.exists(cur_path):
-            print(cur_path + ' not found')
+            # print(cur_path + ' not found')
             return
         with open(cur_path, 'r') as f:
             my_res = json.load(f)
@@ -1695,19 +1335,25 @@ class Trainer(object):
                 else:
                     s = self.calculate_rule_score(r, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
                                                   var_prob_ruleLen)
+
+                if r in my_res['shallow_rule_dict']:
+                    s = (1-self.gamma_shallow) * s + (self.gamma_shallow) * my_res['shallow_score'][my_res['shallow_rule_dict'].index(r)]
+                else:
+                    s = (1-self.gamma_shallow) * s
+
                 rule_dict1[rule_Len].append({'rule': r, 'score': s, 'sup_num': rule_sup_num_dict[str(r)]})
 
-        if self.overall_mode == 'total':
+        if self.overall_mode == 'general':
             with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','w') as f:
                 json.dump(rule_dict1, f)
-        elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
             with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','w') as f:
                 json.dump(rule_dict1, f)
 
         return 
 
 
-    def create_all_rule_dicts(self, rel_idx, train_edges, query_idx=None, mode='total', pos_examples_idx=None):
+    def create_all_rule_dicts(self, rel_idx, train_edges, query_idx=None, mode='general', pos_examples_idx=None):
         rule_dict = {}
         rule_sup_num_dict = {}
         cnt = 0
@@ -1723,13 +1369,13 @@ class Trainer(object):
                 if not idx in pos_examples_idx:
                     continue
             if train_edges[idx][1] == rel_idx:
-                if self.overall_mode == 'total':
+                if self.overall_mode == 'general':
                     path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-                elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+                elif self.overall_mode in ['few', 'biased', 'time_shifting']:
                     path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
                 if not os.path.exists(path):
-                    print(path + ' not found')
+                    # print(path + ' not found')
                     continue
                 with open(path, 'r') as f:
                     x = json.load(f)
@@ -1825,7 +1471,7 @@ class Trainer(object):
             res_mat[k,0] = res_dict[k]
 
         if self.dataset_using in ['wiki', 'YAGO']:
-            f_check_enable = [0,0.5,1][-1]
+            f_check_enable = [0, 0.5, 1][0] # disable
 
             if int_f<0 or int_b<0:
                 f_check_enable = 0
@@ -1895,65 +1541,6 @@ class Trainer(object):
     def find_common_nodes(self, ls1, ls2):
         return [list(set(ls1[i]).intersection(set(ls2[i]))) for i in range(len(ls1))]
 
-    def generate_input_dict(self, rel_idx, ruleLen, train_edges):
-        cur_num_paths = min(self.num_paths_max, self.num_paths_dict[rel_idx][ruleLen])
-
-        input_dict_ls = []
-        for query in train_edges:
-            if query[1] == rel_idx:
-                masked_facts = train_edges[np.invert(np.all(train_edges==query, axis=1))]
-                query_inv = self.obtain_query_inv(query)
-                masked_facts = masked_facts[np.invert(np.all(masked_facts==query_inv, axis=1))]
-
-                edges_simp = masked_facts[:,[0,2]]
-                edges_simp = np.unique(edges_simp, axis=0)
-                edges_simp = edges_simp.astype(int)
-                pos = list(edges_simp)
-                rows, cols = zip(*pos)
-
-                adj_mat = np.zeros((self.num_entites, self.num_entites))
-                adj_mat[rows, cols] = 1
-
-                query_int = query[3:]
-
-                cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver(query[0], adj_mat, self.num_entites, query[2])
-
-                if cur_num_hops1 == ruleLen:
-                    cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver(query[2], adj_mat, self.num_entites, query[0])
-
-                    path_ls = self.find_common_nodes(new_nodes_ls1, new_nodes_ls2[::-1])
-
-                    walk_edges = []
-                    for i in range(cur_num_hops1):
-                        walk_edges.append(edges_simp[np.isin(edges_simp[:,0], path_ls[i]) & np.isin(edges_simp[:,1], path_ls[i+1])])
-
-                    ent_walk_res = self.get_walks_c4(walk_edges, ["entity_"]).to_numpy()
-
-                    cur_input_dict = {'rel_dict': {}, 'tmp_rel_dict': {}}
-                    cur_mask = []
-                    for l in range(cur_num_paths):
-                        cur_input_dict['rel_dict'][l] = {}
-                        cur_input_dict['tmp_rel_dict'][l] = {}
-
-                        if l< ent_walk_res.shape[0]:
-                            cur_mask.append(0)
-                            for k in range(ruleLen):
-                                rel, tmp_rel = self.obtain_edges_given_nodes(masked_facts, ent_walk_res[l,k], ent_walk_res[l,k+1], query_int)
-                                cur_input_dict['rel_dict'][l][k] = rel
-                                cur_input_dict['tmp_rel_dict'][l][k] = tmp_rel
-                                # print(rel)
-                                # print(tmp_rel)
-                        else:
-                            cur_mask.append(-1000)
-                            for k in range(ruleLen):
-                                cur_input_dict['rel_dict'][l][k] = [0]
-                                cur_input_dict['tmp_rel_dict'][l][k] = [0]
-                    cur_input_dict['mask'] = cur_mask
-
-                    input_dict_ls.append(cur_input_dict)
-
-        return input_dict_ls
-
 
     def generate_input_dict_v2(self, rel_idx, ruleLen, train_edges):
         cur_num_paths = min(self.num_paths_max, self.num_paths_dict[rel_idx][ruleLen])
@@ -2011,7 +1598,7 @@ class Trainer(object):
 
                         input_dict_ls.append(cur_input_dicts)
 
-                        if len(input_dict_ls)>self.num_training_samples:
+                        if len(input_dict_ls)>self.num_train_samples_max:
                             break
 
         return input_dict_ls
@@ -2193,38 +1780,105 @@ class Trainer(object):
         return ((int1[:, 1] < int2[0]-int_f) & (int1[:, 0] < int2[0]-int_f))*(-1) \
                                     + ((int1[:, 0] > int2[1]+int_b) & (int1[:, 1] > int2[1]+int_b))*1
 
-    def prepare_inputs(self, idx_ls, const_pattern_ls, rule_mode=1):
+
+    def collect_rules(self, idx_ls, rel_idx):
         if not isinstance(idx_ls, list):
             idx_ls = [idx_ls]
 
-        rules_dict = {}
+        rules_dict = []
         for idx in idx_ls:
-            if self.overall_mode == 'total':
+            if self.overall_mode == 'general':
                 path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
                 path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
+            # print(path)
+
             if not os.path.exists(path):
-                print(path + ' not found')
+                # print(path + ' not found')
                 cur_rules_dict = {}
             else:
                 with open(path, 'r') as f:
                     cur_rules_dict = json.load(f)
-            for i in cur_rules_dict.keys():
-                if str(i) not in rules_dict.keys():
-                    rules_dict[str(i)] = []
-                rules_dict[str(i)] += cur_rules_dict[i]
+            for s_i in cur_rules_dict.keys():
+                i = int(s_i)
+                alpha_dict = self.merge_rules(cur_rules_dict[s_i], 2*i + i*(i-1)/2)
+                # print(cur_rules_dict[s_i])
+                # print(alpha_dict)
+                # sys.exit()
+
+                rules_dict += [r for r in alpha_dict]
+
+
+        # counter and select most freq
+        self.shallow_rule_dict[rel_idx] = self.count_lists(rules_dict)[:self.shallow_score_length]
+
+        # print(self.shallow_rule_dict[rel_idx], len(self.shallow_rule_dict[rel_idx]))
+        # print(rel_idx, len(self.shallow_rule_dict[rel_idx]), len(idx_ls))
+
+
+    def merge_rules(self, rules_dict, pre_len):
+        alpha_dict = {}
+        for r in rules_dict:
+            cur_rule = tuple(r['rule'][:pre_len])
+            if cur_rule not in alpha_dict:
+                alpha_dict[cur_rule] = []
+            alpha_dict[cur_rule].append(r['alpha'])
+        return alpha_dict
+
+
+    def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, rule_mode=1):
+        if not isinstance(idx_ls, list):
+            idx_ls = [idx_ls]
+
+        rules_dict = {}
+        merged_rules_dict = {}
+        for idx in idx_ls:
+            if self.overall_mode == 'general':
+                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+
+            # print(path)
+
+            if not os.path.exists(path):
+                # print(path + ' not found')
+                cur_rules_dict = {}
+            else:
+                with open(path, 'r') as f:
+                    cur_rules_dict = json.load(f)
+
+            for s_i in cur_rules_dict.keys():
+                i = int(s_i)
+                if s_i not in rules_dict.keys():
+                    rules_dict[s_i] = []
+                rules_dict[s_i] += cur_rules_dict[s_i]
+                # print(cur_rules_dict[s_i])
+
+                if s_i not in merged_rules_dict.keys():
+                    merged_rules_dict[s_i] = []
+
+                alpha_dict = self.merge_rules(cur_rules_dict[s_i], 2*i + i*(i-1)/2)
+                merged_rules_dict[s_i] += [{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict]
+                # print(alpha_dict)
+                # print([{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict])
 
         # print(idx_ls)
 
         input_dict = {}
         f_valid = 0
+
+        shallow_rule_idx = np.zeros((1, self.shallow_score_length))
+        shallow_rule_alpha = np.zeros((1, self.shallow_score_length))
+        # print(self.shallow_rule_dict[rel_idx])
+
         for i in range(self.max_explore_len):
-            if str(i+1) in rules_dict.keys():
+            s_len = str(i+1)
+            if s_len in rules_dict.keys():
                 rel_ls = []
                 TR_ls = []
                 alpha_ls = []
-                for r in rules_dict[str(i+1)]:
+                for r in rules_dict[s_len]:
                     if isinstance(r, dict):
                         rel_ls.append(r['rule'][:i+1])
                         TR_ls.append([const_pattern_ls.index(x) for x in r['rule'][i+1:]])
@@ -2240,7 +1894,21 @@ class Trainer(object):
 
             # print(input_dict[i])
 
-        return input_dict, f_valid
+
+            if s_len in merged_rules_dict.keys():
+                for r in merged_rules_dict[s_len]:
+                    # if r['rule'] not in self.shallow_rule_dict[rel_idx]:
+                    #     self.shallow_rule_dict[rel_idx].append(r['rule'])
+
+                    cur_shallow_rule = r['rule']
+                    if cur_shallow_rule not in self.shallow_rule_dict[rel_idx]:
+                        continue
+
+                    shallow_rule_idx[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] = 1
+                    shallow_rule_alpha[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] += r['alpha']/len(idx_ls)
+
+
+        return input_dict, f_valid, shallow_rule_idx, shallow_rule_alpha
 
 
     def prepare_inputs_tfm_test(self, train_edges, query_rel, query_time, candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
@@ -2452,9 +2120,9 @@ class Trainer(object):
             cur_h_order = []
             cur_h_pair = []
 
-            if self.overall_mode == 'total':
+            if self.overall_mode == 'general':
                 path = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-            elif self.overall_mode in ['sub', 'imbalance', 'time_shift']:
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
                 path = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
 
             if os.path.exists(path):
@@ -2554,48 +2222,6 @@ class Trainer(object):
         for i in range(len(split_range)):
             facts1[(facts1[:,1]==rel_idx) & np.isin(facts1[:,4] - facts1[:,3], split_range[i]), 1] = rel_idx + 100*i
         return facts1
-
-
-    def variable_init(self, num_rel, num_pattern, num_ruleLen, ruleLen=None):
-        if not ruleLen:
-            prob_rel_ls = []
-            prob_pattern_ls = []
-
-            for i in range(1, num_ruleLen+1):
-                prob_rel = tf.nn.softmax(tf.Variable(np.random.rand(num_rel, i), dtype=tf.float32), axis=0)
-                prob_rel = tf.split(prob_rel, i, axis=1)
-                prob_rel_ls.append(prob_rel)
-
-                prob_pattern = tf.nn.softmax(tf.Variable(np.random.rand(num_pattern, i), dtype=tf.float32), axis=0)
-                prob_pattern = tf.split(prob_pattern, i, axis=1)
-                prob_pattern_ls.append(prob_pattern)
-
-            return prob_rel_ls, prob_pattern_ls
-        else:
-            prob_rel = tf.nn.softmax(tf.Variable(np.random.rand(num_rel, ruleLen), dtype=tf.float32), axis=0)
-            prob_rel = tf.split(prob_rel, ruleLen, axis=1)
-
-            prob_pattern = tf.nn.softmax(tf.Variable(np.random.rand(num_pattern, ruleLen), dtype=tf.float32), axis=0)
-            prob_pattern = tf.split(prob_pattern, ruleLen, axis=1)
-
-            return prob_rel, prob_pattern
-
-
-    def variable_init_v2(self, num_rel, num_pattern, num_ruleLen):
-        prob_rel_ls = []
-        prob_pattern_ls = []
-        prob_ruleLen = tf.nn.softmax(tf.Variable(np.random.rand(1, num_ruleLen), dtype=tf.float32), axis=1)
-
-        for i in range(1, num_ruleLen+1):
-            prob_rel = tf.nn.softmax(tf.Variable(np.random.rand(num_rel, i), dtype=tf.float32), axis=0)
-            prob_rel = tf.split(prob_rel, i, axis=1)
-            prob_rel_ls.append(prob_rel)
-
-            prob_pattern = tf.nn.softmax(tf.Variable(np.random.rand(num_pattern, i*(i+1)//2), dtype=tf.float32), axis=0)
-            prob_pattern = tf.split(prob_pattern, i*(i+1)//2, axis=1)
-            prob_pattern_ls.append(prob_pattern)
-
-        return prob_rel_ls, prob_pattern_ls, prob_ruleLen
 
 
     def variable_init_v3(self):

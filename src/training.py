@@ -10,7 +10,7 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import Trainer
+from Models import TILP
 
 import tensorflow as tf
 
@@ -23,7 +23,7 @@ def my_train(i, num_relations, num_processes):
         relations_idx = range(i * num_relations, num_rel1)
 
     loss_dict = {}
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
 
     for rel_idx in relations_idx:
         loss_dict[rel_idx] = {}
@@ -58,15 +58,15 @@ def my_train_v2(i, num_relations, num_processes, rel_empty_ls, mode, para_ls_for
 
     loss_dict = {}
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
     num_trainMax_dict = [(0,300,3000),(300,1000,1200),(1000,3000,400),(3000,100000,120)]
 
     for rel_idx1 in relations_idx:
         rel_idx = rel_empty_ls[rel_idx1]
-        if mode == 'total':
+        if mode == 'general':
             cur_num_samples = len(train_edges[train_edges[:,1]==rel_idx])
-        elif 'sub' in mode:
+        elif 'few' in mode:
             x = train_edges
             cur_num_samples = len(x[x[:,1]==rel_idx])
         num_trainMax = [x[-1] for x in num_trainMax_dict if (cur_num_samples>=x[0]) and (cur_num_samples<x[1])][0]
@@ -88,15 +88,15 @@ def my_train_v3(i, num_relations, num_processes, rel_empty_ls, mode, para_ls_for
 
     loss_dict = {}
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
     num_trainMax_dict = [(0,300,3000),(300,1000,1200),(1000,3000,400),(3000,100000,120)]
 
     for rel_idx1 in relations_idx:
         rel_idx = rel_empty_ls[rel_idx1]
-        if mode == 'total':
+        if mode == 'general':
             cur_num_samples = len(train_edges[train_edges[:,1]==rel_idx])
-        elif 'sub' in mode:
+        elif 'few' in mode:
             x = train_edges
             cur_num_samples = len(x[x[:,1]==rel_idx])
         num_trainMax = [x[-1] for x in num_trainMax_dict if (cur_num_samples>=x[0]) and (cur_num_samples<x[1])][0]
@@ -109,19 +109,19 @@ def my_train_v3(i, num_relations, num_processes, rel_empty_ls, mode, para_ls_for
 def my_train_v4(rel_empty_ls, mode, para_ls_for_trainer,
                      train_edges, const_pattern_ls,
                     train_idx = None, path_name = ''):
-    num_training = 200
+    num_epoch = 200
     loss_dict = {}
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    loss = my_trainer.TRL_model_training_v2(rel_empty_ls, num_training, train_edges, const_pattern_ls, mode, train_idx, path_name)
-    loss_dict['loss'] = loss.tolist()
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    loss = my_trainer.TRL_model_training_v2(rel_empty_ls, num_epoch, train_edges, const_pattern_ls, mode, train_idx, path_name)
+    loss_dict['loss'] = [l.tolist() for l in loss]
 
     return loss_dict
 
 
 
 def do_my_train_v2(para_ls_for_trainer, train_edges, const_pattern_ls, 
-                    mode='total', rel_empty_ls = None, train_idx = None, path_name=''):
+                    mode='general', rel_empty_ls = None, train_idx = None, path_name=''):
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
     if rel_empty_ls == None:
         rel_empty_ls = [i for i in range(num_rel)]
@@ -150,7 +150,7 @@ def do_my_train_v2(para_ls_for_trainer, train_edges, const_pattern_ls,
 
 
 def do_my_train_v3(para_ls_for_trainer, train_edges, const_pattern_ls, 
-                    mode='total', rel_empty_ls = None, train_idx = None, path_name=''):
+                    mode='general', rel_empty_ls = None, train_idx = None, path_name=''):
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
     if rel_empty_ls == None:
         rel_empty_ls = [i for i in range(num_rel)]
@@ -180,7 +180,7 @@ def do_my_train_v3(para_ls_for_trainer, train_edges, const_pattern_ls,
 
 
 def do_my_train_TRL(para_ls_for_trainer, train_edges, const_pattern_ls, 
-                    mode='total', targ_rel_ls = None, pos_examples_idx = None, path_name=''):
+                    mode='general', targ_rel_ls = None, pos_examples_idx = None, path_name=''):
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
     if targ_rel_ls == None:
         targ_rel_ls = [i for i in range(num_rel)]
@@ -197,14 +197,14 @@ def do_my_train_TRL(para_ls_for_trainer, train_edges, const_pattern_ls,
 
 
 def do_my_train_tfm(para_ls_for_trainer, rel_ls, train_edges, dist_pars):
-    num_training = 100
+    num_epoch = 100
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    my_trainer.train_tfm_v2(rel_ls, num_training, train_edges, dist_pars)
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_trainer.train_tfm_v2(rel_ls, num_epoch, train_edges, dist_pars)
 
 
 def do_my_train_tfm_Wc(para_ls_for_trainer, rel_ls, train_edges, dist_pars):
-    num_training = 100
+    num_epoch = 100
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-    my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    my_trainer.train_tfm_Wc_v2(rel_ls, num_training, train_edges, dist_pars)
+    my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_trainer.train_tfm_Wc_v2(rel_ls, num_epoch, train_edges, dist_pars)
