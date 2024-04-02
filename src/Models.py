@@ -44,8 +44,8 @@ class TILP(object):
         self.rnn_batch_size = 1
         self.rnn_num_layer = 1
 
-        self.f_non_Markovian = 1 # whether consider non-Markovian constraints
-        self.f_Wc_ts = 0 # whether consider intermediate nodes for temporal feature modeling
+        self.f_non_Markovian = 1 # consider non-Markovian constraints
+        self.f_Wc_ts = 0 # consider intermediate nodes for temporal feature modeling
         self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
 
         self.gamma_shallow = 0.8
@@ -236,6 +236,7 @@ class TILP(object):
         f_exist = tf.placeholder(tf.float32, shape=(None, 3))
         mask = tf.placeholder(tf.float32, shape=(None, self.num_rel))
 
+
         valid_train_idx = []
         for idx in range(len(train_edges)):
             if self.overall_mode == 'general':
@@ -262,7 +263,7 @@ class TILP(object):
         loss_avg_old = 100
 
         init = tf.global_variables_initializer()
-        loss_avg_ls = []
+
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -313,10 +314,11 @@ class TILP(object):
                 if cnt % 10 == 0:
                     print(str(cnt)+ ', loss:', loss_avg)
 
+                # print(str(cnt)+ ', loss:', loss_avg)
+
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
-                loss_avg_ls.append(loss_avg)
 
         my_res = {}
         my_res['W_order_ls'] = self.my_convert_to_list(res_W_order_ls)
@@ -330,7 +332,7 @@ class TILP(object):
             with open(cur_path, 'w') as f:
                 json.dump(my_res, f)
 
-        return loss_avg_ls
+        return loss_avg
 
 
     def train_tfm_Wc_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
@@ -369,7 +371,7 @@ class TILP(object):
         loss_avg_old = 100
 
         init = tf.global_variables_initializer()
-        loss_avg_ls = []
+
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -421,7 +423,6 @@ class TILP(object):
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
-                loss_avg_ls.append(loss_avg)
 
         my_res = {}
         my_res['W_order_ls'] = self.my_convert_to_list(res_W_order_ls)
@@ -435,7 +436,7 @@ class TILP(object):
             with open(cur_path, 'w') as f:
                 json.dump(my_res, f)
 
-        return loss_avg_ls
+        return loss_avg
 
 
     def apply_single_rule(self, st_node, query_int, rule, rule_Len, facts, 
@@ -779,7 +780,7 @@ class TILP(object):
 
 
     def predict(self, rel_idx, train_edges, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges_total,
-                    queries_idx = None, mode='general', known_facts_int=[0, 0], selected_rules=None, pure_guessing=True,
+                    queries_idx = None, mode='general', known_facts_int=[0, 0], selected_rules=None, enable_pure_guessing=True,
                     format_extra_len=0, f_predicting=0):
 
         if self.overall_mode == 'general':
@@ -791,7 +792,7 @@ class TILP(object):
         if not os.path.exists(path):
             # print(path + ' not found')
             rule_dict1 = {}
-            if not pure_guessing:
+            if not enable_pure_guessing:
                 return {}
         else:
             with open(path,'r') as f:
@@ -860,43 +861,24 @@ class TILP(object):
 
                         res_dict = self.my_merge_dict(res_dict, cur_dict)
 
-                if pure_guessing:
-                    if len(res_dict) == 0:
-                        for i in range(self.num_entites):
-                            res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
+                if enable_pure_guessing and (len(res_dict) == 0):
+                    for i in range(self.num_entites):
+                        res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
 
-                if len(dist_pars)>0:
-                    if self.f_Wc_ts:
-                        p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
-                                            p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
-                    else:
-                        p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+                res_tfm_score = self.predict_tfm_score_with_fact_check(query, facts, res_dict, dist_pars, assiting_data)
 
-                    if line[1]>= self.num_rel//2:
-                        cur_query_rel = line[1] - self.num_rel//2
-                    else:
-                        cur_query_rel = line[1] + self.num_rel//2
-
-                    TRL_total_score = sum(res_dict.values())
-                    for cand in res_dict:
-                        res_dict[cand] += 0.1* TRL_total_score *self.predict_tfm_score(train_edges, 
-                                                                    cur_query_rel, line[3], cand, 
-                                                                    p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
-                        if self.f_Wc_ts:
-                            res_dict[cand] += 0.05* TRL_total_score *self.predict_tfm_Wc_score(line[1], res_ts_dict[cand], 
-                                                                p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc)
-
-                rank = self.evaluate_res_dict(res_dict, line[2], line, train_edges_total, assiting_data, 
-                                                    known_facts_int[0], known_facts_int[1], format_extra_len)
+                rank = self.evaluate_res_dict(res_dict, line[2], line, train_edges_total, res_tfm_score, known_facts_int[0], known_facts_int[1], format_extra_len)
                 rank_dict[idx+s] = rank
 
         return rank_dict
 
 
+
+
     def predict_in_batch(self, i, num_queries, num_processes, rel_idx, train_edges, test_data, test_data_inv, 
                             const_pattern_ls, assiting_data, dist_pars, train_edges_total, rules_dict=None, 
                             rule_scores=None, mode='general', known_facts_int= [0, 0], selected_rules=None,
-                            format_extra_len=0, f_predicting=0):
+                            format_extra_len=0, f_predicting=0, enable_pure_guessing = True):
         n_t = len(test_data)
         num_rest_queries = n_t - (i + 1) * num_queries
         if (num_rest_queries >= num_queries) and (i + 1 < num_processes):
@@ -904,11 +886,9 @@ class TILP(object):
         else:
             queries_idx = range(i * num_queries, n_t)
 
-        pure_guessing = True
-
         rank_dict = self.predict(rel_idx, train_edges, test_data, test_data_inv, const_pattern_ls, 
                                     assiting_data, dist_pars, train_edges_total,
-                                    queries_idx, mode, known_facts_int, selected_rules, pure_guessing,
+                                    queries_idx, mode, known_facts_int, selected_rules, enable_pure_guessing,
                                     format_extra_len, f_predicting)
 
         return rank_dict
@@ -953,6 +933,90 @@ class TILP(object):
             x3 = np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0])*h_pair)/np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0]))
 
         return x2*gamma_tfm[0][0] + x3*gamma_tfm[0][1]
+
+
+
+    def predict_tfm_score_with_fact_check(self, query, facts, res_dict, dist_pars, assiting_data):
+        res_mat = np.zeros((self.num_entites,1))
+
+        if len(dist_pars)>0:
+            if self.f_Wc_ts:
+                p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
+                                    p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
+            else:
+                p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+
+            if line[1]>= self.num_rel//2:
+                cur_query_rel = line[1] - self.num_rel//2
+            else:
+                cur_query_rel = line[1] + self.num_rel//2
+
+            TRL_total_score = sum(res_dict.values())
+            for cand in res_dict:
+                res_mat[cand, 0] += 0.1* TRL_total_score *self.predict_tfm_score(train_edges, 
+                                                            cur_query_rel, line[3], cand, 
+                                                            p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
+                if self.f_Wc_ts:
+                    res_mat[cand, 0] += 0.05* TRL_total_score *self.predict_tfm_Wc_score(line[1], res_ts_dict[cand], 
+                                                        p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc)
+
+            f_check_enable = [0, 0.5, 1][-1] # whether enable
+
+            if self.dataset_using in ['wiki', 'YAGO']:
+                if self.dataset_using == 'wiki':
+                    ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
+                elif self.dataset_using == 'YAGO':
+                    ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
+
+                if f_check_enable:
+                    if f_check_enable == 1:
+                        res_mat_exp = res_mat - 1
+                        if self.dataset_using == 'YAGO':
+                            if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
+                                res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                            res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
+                        elif self.dataset_using == 'wiki':
+                            res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                            if not query[1] in [17, 20]:
+                                res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
+                        res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
+
+
+                    if self.dataset_using == 'wiki':
+                        if query[1] in Gauss_int_dict.keys():
+                            x = query[3] - ent_int_mat[:, 0]
+                            y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                            res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+                            int_f = 5
+                            int_b = 5
+                    elif self.dataset_using == 'YAGO':
+                        rel_once = [10, 17]
+                        if query[1] in rel_once:
+                            res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
+
+                        if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                            res_mat[ent_prop_mat[:,0] == -1] -= 1
+                        elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
+                            res_mat[ent_prop_mat[:,0] == 1] -= 1
+
+                        if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                            y = facts[facts[:, 1]==query[1], 3:]
+                            z = facts[facts[:, 1]==query[1], 2:3]
+                            y = self.obtain_tmp_rel_v2(y, query[3:]).reshape((-1,1))
+                            res_mat[z[y==0]] -= 0.1
+
+                        if f_check_enable == 1:
+                            if query[1] in Gauss_int_dict.keys():
+                                if query[1] != 17:
+                                    x = query[3] - ent_int_mat[:, 0]
+                                    y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                                else:
+                                    x = query[3] - ent_int_mat[:, 1]
+                                    y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
+                                res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+
+        return res_mat
+
 
 
 
@@ -1500,79 +1564,20 @@ class TILP(object):
         return queries_idx
 
 
-    def evaluate_res_dict(self, res_dict, targ_node, query, facts, assiting_data, int_f=0, int_b=0, 
-                             format_extra_len=0):
-        if self.dataset_using == 'wiki':
-            ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
-        elif self.dataset_using == 'YAGO':
-            ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
-
-
+    def evaluate_res_dict(self, res_dict, targ_node, query, facts, res_tfm_score, int_f=0, int_b=0, format_extra_len=0):
         res_mat = np.zeros((self.num_entites,1))
         for k in res_dict.keys():
             res_mat[k,0] = res_dict[k]
 
-        if self.dataset_using in ['wiki', 'YAGO']:
-            f_check_enable = [0, 0.5, 1][0] # disable
-
-            if int_f<0 or int_b<0:
-                f_check_enable = 0
-                int_f = abs(int_f)
-                int_b = abs(int_b)
-
-            if f_check_enable:
-                if f_check_enable == 1:
-                    res_mat_exp = res_mat - 1
-                    if self.dataset_using == 'YAGO':
-                        if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
-                            res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                        res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
-                    elif self.dataset_using == 'wiki':
-                        res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                        if not query[1] in [17, 20]:
-                            res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
-                    res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
-
-
-                if self.dataset_using == 'wiki':
-                    if query[1] in Gauss_int_dict.keys():
-                        x = query[3] - ent_int_mat[:, 0]
-                        y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                        res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
-                        int_f = 5
-                        int_b = 5
-                elif self.dataset_using == 'YAGO':
-                    rel_once = [10, 17]
-                    if query[1] in rel_once:
-                        res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
-
-                    if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                        res_mat[ent_prop_mat[:,0] == -1] -= 1
-                    elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
-                        res_mat[ent_prop_mat[:,0] == 1] -= 1
-
-                    if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                        y = facts[facts[:, 1]==query[1], 3:]
-                        z = facts[facts[:, 1]==query[1], 2:3]
-                        y = self.obtain_tmp_rel_v2(y, query[3:]).reshape((-1,1))
-                        res_mat[z[y==0]] -= 0.1
-
-                    if f_check_enable == 1:
-                        if query[1] in Gauss_int_dict.keys():
-                            if query[1] != 17:
-                                x = query[3] - ent_int_mat[:, 0]
-                                y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                            else:
-                                x = query[3] - ent_int_mat[:, 1]
-                                y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
-                            res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+        res_mat += res_tfm_score
 
 
         s = copy.copy(res_mat[targ_node,0])
 
+        # delete other correct answers in rank
         y = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),3:]
         z = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),2:3]
-        y = self.obtain_tmp_rel_v3(y, query[3:], int_f, int_b)
+        y = self.obtain_tmp_rel_v3(y, query[3:], abs(int_f), abs(int_b))
         res_mat[z[y==0]] -= 9999
 
         rank = len(res_mat[res_mat[:,0]>s])+1
