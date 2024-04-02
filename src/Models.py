@@ -262,7 +262,7 @@ class TILP(object):
         loss_avg_old = 100
 
         init = tf.global_variables_initializer()
-
+        loss_avg_ls = []
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -316,6 +316,7 @@ class TILP(object):
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
+                loss_avg_ls.append(loss_avg)
 
         my_res = {}
         my_res['W_order_ls'] = self.my_convert_to_list(res_W_order_ls)
@@ -329,7 +330,7 @@ class TILP(object):
             with open(cur_path, 'w') as f:
                 json.dump(my_res, f)
 
-        return loss_avg
+        return loss_avg_ls
 
 
     def train_tfm_Wc_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
@@ -368,7 +369,7 @@ class TILP(object):
         loss_avg_old = 100
 
         init = tf.global_variables_initializer()
-
+        loss_avg_ls = []
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -420,6 +421,7 @@ class TILP(object):
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
                 loss_avg_old = copy.copy(loss_avg)
+                loss_avg_ls.append(loss_avg)
 
         my_res = {}
         my_res['W_order_ls'] = self.my_convert_to_list(res_W_order_ls)
@@ -433,7 +435,7 @@ class TILP(object):
             with open(cur_path, 'w') as f:
                 json.dump(my_res, f)
 
-        return loss_avg
+        return loss_avg_ls
 
 
     def apply_single_rule(self, st_node, query_int, rule, rule_Len, facts, 
