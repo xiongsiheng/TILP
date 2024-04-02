@@ -65,20 +65,16 @@ pos_examples_idx, bg_train, bg_pred = split_dataset(dataset_using, dataset_name1
 print('Num of pos examples used:', len(pos_examples_idx))
 
 
+dist_pars = []
 if f_use_tfm:
     p_rec, p_order, mu_pair, sigma_pair, lambda_pair, mu_dur, sigma_dur = obtain_distribution_parameters(train_edges, num_rel)
-    dist_pars = [p_rec, p_order, mu_pair, sigma_pair, lambda_pair]
+    dist_pars += [p_rec, p_order, mu_pair, sigma_pair, lambda_pair]
 
 
 
 if 'find_rules' in steps_to_do:
     print('Start finding rules.')
     do_my_find_rules(targ_rel_ls, bg_train, para_ls_for_model, pos_examples_idx = pos_examples_idx)
-
-    if f_use_tfm:
-        p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = obtain_distribution_parameters_Wc(train_edges, 
-                                                                            dataset_using, overall_mode, num_rel)
-        dist_pars += [p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc]
 
     print('Finding rules finished.')
 
@@ -92,8 +88,7 @@ if 'train_models' in steps_to_do:
                             pos_examples_idx = pos_examples_idx, targ_rel_ls = targ_rel_ls)
 
     if f_use_tfm:
-        do_my_train_tfm(para_ls_for_model, targ_rel_ls, train_edges, dist_pars[:5])
-        do_my_train_tfm_Wc(para_ls_for_model, targ_rel_ls, train_edges, dist_pars[5:])
+        do_my_train_tfm(para_ls_for_model, targ_rel_ls, train_edges, dist_pars)
 
     print('Training model finished.')
 
@@ -114,8 +109,7 @@ if 'create_rule_dicts' in steps_to_do:
 
 if 'predict' in steps_to_do:
     print('Start prediction:')
-    if not f_use_tfm:
-        dist_pars = []
+
     do_my_predict(targ_rel_ls, para_ls_for_model, bg_pred, valid_data, valid_data_inv, 
                     const_pattern_ls, assiting_data, dist_pars, train_edges)
 

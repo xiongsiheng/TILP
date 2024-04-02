@@ -13,6 +13,9 @@ from scipy.stats import norm
 import tensorflow as tf
 
 
+
+
+
 class TILP(object):
     def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
         self.num_rel = num_rel
@@ -41,8 +44,8 @@ class TILP(object):
         self.rnn_batch_size = 1
         self.rnn_num_layer = 1
 
-        self.f_non_Markovian = 1
-        self.f_Wc_ts = 1
+        self.f_non_Markovian = 1 # whether consider non-Markovian constraints
+        self.f_Wc_ts = 0 # whether consider intermediate nodes for temporal feature modeling
         self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
 
         self.gamma_shallow = 0.8
@@ -233,6 +236,18 @@ class TILP(object):
         f_exist = tf.placeholder(tf.float32, shape=(None, 3))
         mask = tf.placeholder(tf.float32, shape=(None, self.num_rel))
 
+        valid_train_idx = []
+        for idx in range(len(train_edges)):
+            if self.overall_mode == 'general':
+                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+
+            if not os.path.exists(path):
+                continue
+            valid_train_idx.append(idx)
+
+
         query_score = self.calculate_tfm_score_v2(query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, 
                                               f_exist, mask, var_W_rec, var_b_rec,
                                               var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm)
@@ -255,6 +270,9 @@ class TILP(object):
                 num_samples = 0.
 
                 y = list(range(len(train_edges)))
+                if len(valid_train_idx)>0:
+                    y = valid_train_idx
+
                 np.random.shuffle(y)
                 y = y[:self.num_train_samples_max]
 
@@ -292,7 +310,8 @@ class TILP(object):
 
                 loss_avg = loss_avg/num_samples
 
-                print(str(cnt)+ ', loss:', loss_avg)
+                if cnt % 10 == 0:
+                    print(str(cnt)+ ', loss:', loss_avg)
 
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
@@ -324,6 +343,19 @@ class TILP(object):
         f_exist = tf.placeholder(tf.float32, shape=(None, 2))
         mask = tf.placeholder(tf.float32, shape=(None, self.num_rel))
 
+
+        valid_train_idx = []
+        for idx in range(len(train_edges)):
+            if self.overall_mode == 'general':
+                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+
+            if not os.path.exists(path):
+                continue
+            valid_train_idx.append(idx)
+
+
         query_score = self.calculate_tfm_Wc_score_v2(query_rel_one_hot, related_rel_dict, h_order, h_pair, f_exist, mask,
                                                      var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm)
         final_loss = -tf.math.log(query_score)
@@ -344,6 +376,9 @@ class TILP(object):
                 num_samples = 0.
 
                 y = list(range(len(train_edges)))
+                if len(valid_train_idx)>0:
+                    y = valid_train_idx
+
                 np.random.shuffle(y)
                 y = y[:self.num_train_samples_max]
 
@@ -379,7 +414,8 @@ class TILP(object):
 
                 loss_avg = loss_avg/num_samples
 
-                print(str(cnt)+ ', loss:', loss_avg)
+                if cnt % 10 == 0:
+                    print(str(cnt)+ ', loss:', loss_avg)
 
                 if (abs(loss_avg_old - loss_avg) < 1e-5) and (cnt > self.num_epoch_min) and (loss_avg > loss_avg_old):
                     break
@@ -802,7 +838,7 @@ class TILP(object):
                         if isinstance(selected_rules, dict):
                             if not r['rule'] in selected_rules[rel_idx]:
                                 continue
-                        if r['score']<rule_score_bar[rule_Len]:
+                        if r['score'] < rule_score_bar[rule_Len]:
                             continue
                         f_print = 0
                         cur_dict, cur_walk = self.apply_single_rule(line[0], line[3:], r['rule'], int(rule_Len), 
@@ -828,8 +864,12 @@ class TILP(object):
                             res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
 
                 if len(dist_pars)>0:
-                    p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
-                                        p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
+                    if self.f_Wc_ts:
+                        p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
+                                            p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
+                    else:
+                        p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+
                     if line[1]>= self.num_rel//2:
                         cur_query_rel = line[1] - self.num_rel//2
                     else:
