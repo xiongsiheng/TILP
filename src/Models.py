@@ -43,8 +43,15 @@ class TILP(object):
         self.rnn_batch_size = 1
         self.rnn_num_layer = 1
 
+        '''
+        Different TR setting:
+        f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
+        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
+        f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
+        '''
         self.f_non_Markovian = True # consider non-Markovian constraints
         self.f_adjacent_TR_only = True # consider adjacent TRs only
+
         self.f_Wc_ts = False # consider intermediate nodes for temporal feature modeling
         self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
 
@@ -542,6 +549,12 @@ class TILP(object):
 
 
     def path_search(self, path2, masked_facts, query, time_shift_mode):
+        '''
+        Different TR setting:
+        f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
+        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
+        f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
+        '''
         if self.f_Wc_ts:
             t_s_dict = {}
             for k1 in range(self.num_rel):
@@ -600,12 +613,7 @@ class TILP(object):
                 
                 rules = np.unique(rules, axis=0).tolist()
                 # print(rules)
-                '''
-                TR in rule summary
-                f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
-                f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ...
-                f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ...
-                '''                
+
                 for r in rules:
                     if time_shift_mode in [-1, 1]:
                         if self.f_adjacent_TR_only and time_shift_mode in r[num:num + 1 + int(num>1)]: # we only consider adjacent TR
