@@ -38,7 +38,7 @@ elif dataset_using == 'YAGO':
     num_entites = 10623
 
 
-my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+model_paras = [num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode]
 targ_rel_ls = range(num_rel)
 f_use_tfm = False  # whether use temporal feature modeling (Todo: fix issues)
 
@@ -59,7 +59,6 @@ train_edges, valid_data, valid_data_inv, test_data, test_data_inv = do_normal_se
 assiting_data = obtain_assiting_data(dataset_using, dataset_name1, train_edges, num_rel, num_entites)
 
 # To accelarate, we randomly select a fixed number of positive samples for each relation. To use all positive samples, set num_sample_per_rel = -1
-# Once finding rules is done, you can use all positive samples for the following steps since the rules are fixed.
 pos_examples_idx, bg_train, bg_pred = split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=500)
 
 
@@ -83,28 +82,28 @@ if f_use_tfm:
 
 
 if 'find rules' in steps_to_do:
-    do_my_find_rules(targ_rel_ls, bg_train, my_model, mode='path_search', pos_examples_idx = pos_examples_idx, num_processes=24)
-    do_rule_summary(targ_rel_ls, my_model, num_rel, bg_train, const_pattern_ls, num_processes=24)
-    do_my_find_rules(targ_rel_ls, bg_train, my_model, mode='alpha_calculation', pos_examples_idx = pos_examples_idx, num_processes=24)
+    do_my_find_rules(targ_rel_ls, bg_train, model_paras, mode='path_search', pos_examples_idx = pos_examples_idx, num_processes=24)
+    do_rule_summary(targ_rel_ls, model_paras, num_rel, bg_train, const_pattern_ls, num_processes=24)
+    do_my_find_rules(targ_rel_ls, bg_train, model_paras, mode='alpha_calculation', pos_examples_idx = pos_examples_idx, num_processes=24)
 
 
 
 if 'train model' in steps_to_do:
-    do_my_train_TRL(my_model, dataset_using, bg_train, const_pattern_ls, targ_rel_ls=targ_rel_ls, num_epoch=50)
+    do_my_train_TRL(model_paras, dataset_using, bg_train, const_pattern_ls, targ_rel_ls=targ_rel_ls, num_epoch=100)
 
     if f_use_tfm:
-        do_my_train_tfm(my_model, targ_rel_ls, train_edges, dist_pars)
+        do_my_train_tfm(model_paras, targ_rel_ls, train_edges, dist_pars)
 
 
 
 
 if 'rule summary' in steps_to_do:
-    do_calculate_rule_scores(targ_rel_ls, my_model, num_rel, bg_train, const_pattern_ls, num_processes=24)
+    do_calculate_rule_scores(targ_rel_ls, model_paras, num_rel, bg_train, const_pattern_ls, num_processes=24)
 
 
 
 if 'predict' in steps_to_do:
-    do_my_predict(targ_rel_ls, my_model, dataset_using, bg_pred, valid_data, valid_data_inv, 
+    do_my_predict(targ_rel_ls, model_paras, dataset_using, bg_pred, valid_data, valid_data_inv, 
                     const_pattern_ls, assiting_data, dist_pars, train_edges, num_processes=24)
 
     print('Validation set:')
@@ -114,7 +113,7 @@ if 'predict' in steps_to_do:
         json.dump(res_dict, f)
 
 
-    do_my_predict(targ_rel_ls, my_model, dataset_using, bg_pred, test_data, test_data_inv, 
+    do_my_predict(targ_rel_ls, model_paras, dataset_using, bg_pred, test_data, test_data_inv, 
                     const_pattern_ls, assiting_data, dist_pars, train_edges, num_processes=24)
 
     print('Test set:')

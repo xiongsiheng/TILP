@@ -1,25 +1,26 @@
 import json
 from joblib import Parallel, delayed
 from tqdm import tqdm
+from Models import TILP
 
 
 
 
-
-def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, my_model, 
+def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, model_paras, 
                 path_name='', pos_examples_idx=None, time_shift_mode=0):
+    my_model = TILP(*model_paras)
     my_model.apply_in_batch(i, num_queries, num_processes, rel_idx, mode, train_edges, 
                                     path_name, pos_examples_idx, time_shift_mode)
 
 
 
-def do_my_find_rules(rel_ls, train_edges, my_model, mode='path_search', path_name='', 
+def do_my_find_rules(rel_ls, train_edges, model_paras, mode='path_search', path_name='', 
                     pos_examples_idx=None, time_shift_mode=0, num_processes=24):
     for this_rel in tqdm(rel_ls, desc=mode):
         num_queries = (len(train_edges)//2) // num_processes
         Parallel(n_jobs=num_processes)(
             delayed(my_apply)(i, num_queries, num_processes, this_rel, mode, train_edges, \
-                            my_model, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
+                            model_paras, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
             )
 
 

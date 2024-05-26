@@ -1,6 +1,6 @@
 import json
 from joblib import Parallel, delayed
-
+from Models import TILP
 
 
 # def my_train(i, num_relations, num_processes):
@@ -94,7 +94,8 @@ from joblib import Parallel, delayed
 #     return loss_dict
 
 
-def my_train_v4(rel_empty_ls, my_model, train_edges, const_pattern_ls, num_epoch=50):
+def my_train_v4(rel_empty_ls, model_paras, train_edges, const_pattern_ls, num_epoch=50):
+    my_model = TILP(*model_paras)
     loss = my_model.TRL_model_training_v2(rel_empty_ls, num_epoch, train_edges, const_pattern_ls)
     loss_dict = {}
     loss_dict['loss_hist'] = [l.tolist() for l in loss]
@@ -162,17 +163,19 @@ def my_train_v4(rel_empty_ls, my_model, train_edges, const_pattern_ls, num_epoch
 
 
 
-def do_my_train_TRL(my_model, dataset_using, train_edges, const_pattern_ls, 
+def do_my_train_TRL(model_paras, dataset_using, train_edges, const_pattern_ls, 
                     targ_rel_ls = None, num_epoch=50):
-    loss_dict = my_train_v4(targ_rel_ls, my_model, train_edges, const_pattern_ls, num_epoch=num_epoch)
+    loss_dict = my_train_v4(targ_rel_ls, model_paras, train_edges, const_pattern_ls, num_epoch=num_epoch)
     with open('../output/' + dataset_using +'_loss_dict.json', 'w') as f:
         json.dump(loss_dict, f)
 
 
 
-def do_my_train_tfm(my_model, rel_ls, train_edges, dist_pars, num_epoch = 100):
+def do_my_train_tfm(model_paras, rel_ls, train_edges, dist_pars, num_epoch = 100):
+    my_model = TILP(*model_paras)
     my_model.train_tfm_v2(rel_ls, num_epoch, train_edges, dist_pars)
 
 
-def do_my_train_tfm_Wc(my_model, rel_ls, train_edges, dist_pars, num_epoch = 100):
+def do_my_train_tfm_Wc(model_paras, rel_ls, train_edges, dist_pars, num_epoch = 100):
+    my_model = TILP(*model_paras)
     my_model.train_tfm_Wc_v2(rel_ls, num_epoch, train_edges, dist_pars)

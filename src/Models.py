@@ -498,6 +498,130 @@ class TILP(object):
         return res
 
 
+    def alpha_calculation(self, path1, masked_facts, rel_idx, query, time_shift_mode):
+        rule_dict = {}
+        if not os.path.exists(path1):
+            return rule_dict
+        with open(path1, 'r') as f:
+            rule_dict_loaded = json.load(f)
+        
+        if self.overall_mode == 'general':
+            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
+        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
+
+        TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
+        masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
+        masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
+
+        for num in rule_dict_loaded:
+            rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
+            for r in rules:
+                if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
+                    continue
+                if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
+                    continue
+                # print(r)
+                # Instead of calculating alpha for all rules, we select most frequent ones
+                rand_num = random.random()
+                if rand_num < self.prob_cal_alpha:
+                    cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
+                    # print(cur_dict)
+                    # alpha = 0.01 # if we use sampling, it's possible we cannot find the targ node
+                    if query[2] in cur_dict.keys():
+                        alpha = cur_dict[query[2]]
+                else:
+                    alpha = 'Unknown'
+
+                if num not in rule_dict:
+                    rule_dict[num] = []
+                rule_dict[num].append({'rule': r, 'alpha': alpha})
+        return rule_dict
+
+
+    def path_search(self, path2, masked_facts, query, time_shift_mode):
+        if self.f_Wc_ts:
+            t_s_dict = {}
+            for k1 in range(self.num_rel):
+                t_s_dict[k1] = []
+
+        rule_dict = {}
+        edges_simp = masked_facts[:,[0,2]]
+        edges_simp = np.unique(edges_simp, axis=0)
+        edges_simp = edges_simp.astype(int)
+        pos = list(edges_simp)
+        rows, cols = zip(*pos)
+
+        adj_mat = np.zeros((self.num_entites, self.num_entites))
+        adj_mat[rows, cols] = 1
+
+        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
+        if len(cur_num_hops1) > 0:
+            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
+            for num in cur_num_hops1:
+                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+                walk_edges = []
+                for i in range(num):
+                    related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+                    walk_edges.append(related_facts[:,[0,1,3,4,2]]) # [s, r, ts, te, o]
+
+                    if self.f_Wc_ts:
+                        z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+                        for z1 in z:
+                            t_s_dict[z1[1]].append(z1[3]-query[3])
+
+                cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "ts_", "te_"]).to_numpy()
+                # print(cur_ent_walk_res)
+
+                if len(cur_ent_walk_res) == 0:
+                    continue
+
+                rules = cur_ent_walk_res[:, [4*i+1 for i in range(num)]] # extarct all r in the path
+
+                for i in range(num):
+                    # TR(I_i, I_q)
+                    if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != num-1:
+                        # instead of considering all TR, we only preserve adjacent TR: TR(I_1, I_q), TR(I_N, I_q)
+                        continue
+                    cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], query[3:]).reshape((-1,1))
+                    rules = np.hstack((rules, cur_TR))
+
+                if self.f_non_Markovian:
+                    # TR(I_i, I_j)
+                    for i in range(num-1):
+                        for j in range(i+1, num):
+                            if self.f_adjacent_TR_only and j != i + 1:
+                                # instead of considering all TR, we preserve adjacent TR: TR(I_i, I_i+1)
+                                continue
+                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], cur_ent_walk_res[:, 4*j+2:4*j+4]).reshape((-1,1))
+                            rules = np.hstack((rules, cur_TR))
+                
+                rules = np.unique(rules, axis=0).tolist()
+                # print(rules)
+                '''
+                TR in rule summary
+                f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
+                f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ...
+                f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ...
+                '''                
+                for r in rules:
+                    if time_shift_mode in [-1, 1]:
+                        if self.f_adjacent_TR_only and time_shift_mode in r[num:num + 1 + int(num>1)]: # we only consider adjacent TR
+                            continue
+                        if (not self.f_adjacent_TR_only) and time_shift_mode in r[num:num*2]:
+                            continue                                             
+                    rule_dict[num] = [] if num not in rule_dict else rule_dict[num]
+                    rule_dict[num].append({'rule': r, 'alpha': 'Unknown'})
+
+            if self.f_Wc_ts:
+                for k1 in t_s_dict.keys():   
+                    t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
+                with open(path2, 'w') as f:
+                    json.dump(t_s_dict, f)
+        return rule_dict
+
 
     def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, mode='path_search'):
         '''
@@ -529,119 +653,11 @@ class TILP(object):
             masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
             masked_facts = masked_facts[masked_facts[:,3]<=query[3]] if self.overall_mode == 'time_shifting' else masked_facts
             
-            if self.f_Wc_ts:
-                t_s_dict = {}
-                for k1 in range(self.num_rel):
-                    t_s_dict[k1] = []
-
-            rule_dict = {}
             if mode == 'alpha_calculation':
-                if not os.path.exists(path1):
-                    continue
-                with open(path1, 'r') as f:
-                    rule_dict_loaded = json.load(f)
-                
-                if self.overall_mode == 'general':
-                    with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-                        rule_dict_summarized = json.load(f)
-                elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                    with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-                        rule_dict_summarized = json.load(f)
-
-                TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
-                masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
-                masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
-
-                for num in rule_dict_loaded:
-                    rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
-                    for r in rules:
-                        if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
-                            continue
-                        if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
-                            continue
-                        # print(r)
-                        # Instead of calculating alpha for all rules, we select most frequent ones
-                        rand_num = random.random()
-                        if rand_num < self.prob_cal_alpha:
-                            cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
-                            # alpha = 0.01 # if we use sampling, it's possible we cannot find the targ node
-                            # print(cur_dict)
-                            if query[2] in cur_dict.keys():
-                                alpha = cur_dict[query[2]]
-                        else:
-                            alpha = 'Unknown'
-
-                        if num not in rule_dict:
-                            rule_dict[num] = []
-                        rule_dict[num].append({'rule': r, 'alpha': alpha})
-            
+                rule_dict = self.alpha_calculation(path1, masked_facts, rel_idx, query, time_shift_mode)
             elif mode == 'path_search':
-                edges_simp = masked_facts[:,[0,2]]
-                edges_simp = np.unique(edges_simp, axis=0)
-                edges_simp = edges_simp.astype(int)
-                pos = list(edges_simp)
-                rows, cols = zip(*pos)
-
-                adj_mat = np.zeros((self.num_entites, self.num_entites))
-                adj_mat[rows, cols] = 1
+                rule_dict = self.path_search(path2, masked_facts, query, time_shift_mode)
                 
-                cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
-                if len(cur_num_hops1) > 0:
-                    _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
-                    for num in cur_num_hops1:
-                        path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-                        walk_edges = []
-                        for i in range(num):
-                            related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                            walk_edges.append(related_facts[:,[0,1,3,4,2]]) # [s, r, ts, te, o]
-
-                            if self.f_Wc_ts:
-                                z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                                for z1 in z:
-                                    t_s_dict[z1[1]].append(z1[3]-query[3])
-
-                        cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "ts_", "te_"]).to_numpy()
-                        # print(cur_ent_walk_res)
-
-                        if len(cur_ent_walk_res) == 0:
-                            continue
-
-                        rules = cur_ent_walk_res[:, [4*i+1 for i in range(num)]] # extarct all r in the path
-
-                        for i in range(num):
-                            # TR(I_i, I_q)
-                            if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != num-1:
-                                # instead of considering all TR, we only preserve adjacent TR: TR(I_1, I_q), TR(I_N, I_q)
-                                continue
-                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], query[3:]).reshape((-1,1))
-                            rules = np.hstack((rules, cur_TR))
-
-                        if self.f_non_Markovian:
-                            # TR(I_i, I_j)
-                            for i in range(num-1):
-                                for j in range(i+1, num):
-                                    if self.f_adjacent_TR_only and j != i + 1:
-                                        # instead of considering all TR, we preserve adjacent TR: TR(I_i, I_i+1)
-                                        continue
-                                    cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], cur_ent_walk_res[:, 4*j+2:4*j+4]).reshape((-1,1))
-                                    rules = np.hstack((rules, cur_TR))
-
-                        # print(rules)
-                        # rule summary            
-                        rules = np.unique(rules, axis=0).tolist()
-                        for r in rules:
-                            if time_shift_mode in [-1, 1] and time_shift_mode in r[num:num + 2]: # we only consider adjacent TR
-                                continue                            
-                            if num not in rule_dict:
-                                rule_dict[num] = []
-                            rule_dict[num].append({'rule': r, 'alpha': 'Unknown'})
-                
-                if self.f_Wc_ts:
-                    for k1 in t_s_dict.keys():   
-                        t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
-                    with open(path2, 'w') as f:
-                        json.dump(t_s_dict, f)
-
             with open(path1, 'w') as f:
                 json.dump(rule_dict, f)
 
@@ -1406,7 +1422,7 @@ class TILP(object):
         return x
 
 
-    def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, cal_score=False, select_topK_rules=True):
+    def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, const_pattern_ls, cal_score=False, select_topK_rules=True):
         if cal_score:
             # calculate rule weights
             cur_path = self.get_weights_savepath_v2(rel_idx)

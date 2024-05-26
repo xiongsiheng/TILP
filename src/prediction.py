@@ -2,13 +2,14 @@ import json
 from joblib import Parallel, delayed
 import os
 from tqdm import tqdm
+from Models import TILP
 
 
 
 
-
-def my_predict(my_model, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv,
+def my_predict(model_paras, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv,
                 const_pattern_ls, assiting_data, dist_pars, train_edges):
+    my_model = TILP(*model_paras)
     rank_dict = my_model.predict_in_batch(i, num_queries, num_processes, rel_idx, bg_pred, 
                                             test_data, test_data_inv,
                                             const_pattern_ls, assiting_data, dist_pars, train_edges)
@@ -16,12 +17,12 @@ def my_predict(my_model, i, num_queries, num_processes, rel_idx, bg_pred, test_d
 
 
 
-def do_my_predict(rel_ls, my_model, dataset_using, bg_pred, test_data, test_data_inv, 
+def do_my_predict(rel_ls, model_paras, dataset_using, bg_pred, test_data, test_data_inv, 
                     const_pattern_ls, assiting_data, dist_pars, train_edges, num_processes = 24):
     for this_rel in tqdm(rel_ls, desc='predicting: '):
         num_queries = len(test_data) // num_processes
         output = Parallel(n_jobs=num_processes)(
-            delayed(my_predict)(my_model, i, num_queries, num_processes, this_rel, bg_pred, 
+            delayed(my_predict)(model_paras, i, num_queries, num_processes, this_rel, bg_pred, 
                                 test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges) 
                                 for i in range(num_processes)
         )
