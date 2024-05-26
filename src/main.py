@@ -26,7 +26,7 @@ const_pattern_ls = [-1, 0, 1] # notations for temporal relations
 num_ruleLen = [3, 5][dataset_selection]  # max rule length
 
 mode_selection = 0 # select mode: general, few training samples, biased data, time shifting
-overall_mode = ['general', 'few', 'biased', 'time_shifting'][mode_selection] # (Todo: fix issues for different modes)
+overall_mode = ['general', 'few', 'biased', 'time_shifting'][mode_selection] # (Todo: fix issues for difficult modes)
 
 if dataset_using == 'wiki':
     dataset_name1 = 'WIKIDATA12k'
