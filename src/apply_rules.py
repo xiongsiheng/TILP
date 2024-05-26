@@ -1,43 +1,27 @@
-import random
-import numpy as np
-import sys
 import json
 from joblib import Parallel, delayed
-import time
-import os
-import pandas as pd
-import copy
-from collections import Counter
-from scipy.stats import norm
-
-from Models import TILP
+from tqdm import tqdm
 
 
 
-def my_apply(i, num_queries, num_processes, rel_idx, ver, train_edges, para_ls_for_model, 
+
+
+def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, my_model, 
                 path_name='', pos_examples_idx=None, time_shift_mode=0):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    my_model.apply_in_batch(i, num_queries, num_processes, rel_idx, ver, train_edges, 
+    my_model.apply_in_batch(i, num_queries, num_processes, rel_idx, mode, train_edges, 
                                     path_name, pos_examples_idx, time_shift_mode)
 
 
-def do_my_find_rules(rel_ls, train_edges, para_ls_for_model, ver='normal', path_name='', 
-                    pos_examples_idx=None, time_shift_mode=0):
-    for this_rel in rel_ls:
-        num_processes = 24
 
-        start = time.time()
+def do_my_find_rules(rel_ls, train_edges, my_model, mode='path_search', path_name='', 
+                    pos_examples_idx=None, time_shift_mode=0, num_processes=24):
+    for this_rel in tqdm(rel_ls, desc=mode):
         num_queries = (len(train_edges)//2) // num_processes
-        output = Parallel(n_jobs=num_processes)(
-            delayed(my_apply)(i, num_queries, num_processes, this_rel, ver, train_edges, \
-                            para_ls_for_model, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
-        )
-        end = time.time()
+        Parallel(n_jobs=num_processes)(
+            delayed(my_apply)(i, num_queries, num_processes, this_rel, mode, train_edges, \
+                            my_model, path_name, pos_examples_idx, time_shift_mode) for i in range(num_processes)
+            )
 
-        total_time = round(end - start, 6)
-        print("Learning finished in {} seconds.".format(total_time))
 
 
 def check_application_results(train_edges, dataset_using):

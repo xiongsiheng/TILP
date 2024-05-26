@@ -1,22 +1,9 @@
-import random
 import numpy as np
-import sys
-import json
 from joblib import Parallel, delayed
-import time
-import os
-import pandas as pd
-import copy
-from collections import Counter
-from scipy.stats import norm
-
-from Models import TILP
+from tqdm import tqdm
 
 
-def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, para_ls_for_model, mode='general', 
-                                pos_examples_idx= None):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-
+def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, my_model, num_rel):
     n_t = len(train_edges)//2
     n_r = n_t - (i + 1) * n_p
     s = 0
@@ -28,33 +15,22 @@ def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, para_ls_for_mode
     else:
         idxs = range(s+i * n_s, s+n_t)
 
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    rule_dict, rule_sup_num_dict = my_model.create_all_rule_dicts(rel_idx, train_edges, idxs, mode, 
-                                                                        pos_examples_idx)
+    rule_dict, rule_sup_num_dict = my_model.create_all_rule_dicts(rel_idx, train_edges, idxs)
+    
     return rule_dict, rule_sup_num_dict
 
 
-def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_model, mode='general', 
-                                pos_examples_idx=None):
-    n_p = 24
-    start = time.time()
-    n_s = (len(train_edges)//2) // n_p
-    output = Parallel(n_jobs=n_p)(
-        delayed(my_create_all_rule_dicts)(i, n_s, n_p, this_rel, train_edges, 
-                                            para_ls_for_model, mode, 
-                                            pos_examples_idx) for i in range(n_p)
+def do_my_create_all_rule_dicts(this_rel, train_edges, my_model, num_rel, num_processes=24):
+    n_s = (len(train_edges)//2) // num_processes
+    output = Parallel(n_jobs=num_processes)(
+        delayed(my_create_all_rule_dicts)(i, n_s, num_processes, this_rel, train_edges, 
+                                            my_model, num_rel) 
+                                            for i in range(num_processes)
     )
-    end = time.time()
+ 
+    rule_sup_num_dict, rule_dict = {}, {}
 
-    total_time = round(end - start, 6)
-    print("Learning finished in {} seconds.".format(total_time))
-
-
-    rule_sup_num_dict = {}
-    rule_dict = {}
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    for i in range(n_p):
+    for i in range(num_processes):
         rule_sup_num_dict = my_model.my_merge_dict(rule_sup_num_dict, output[i][1])
         for k in output[i][0].keys():
             if k not in rule_dict.keys():
@@ -69,31 +45,45 @@ def do_my_create_all_rule_dicts(this_rel, train_edges, para_ls_for_model, mode='
     return rule_dict, rule_sup_num_dict
 
 
-def do_calculate_rule_scores(rel_ls, para_ls_for_model, 
-                                train_edges, const_pattern_ls, 
-                                mode='general', pos_examples_idx=None):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+def do_rule_summary(rel_ls, my_model, num_rel, train_edges, const_pattern_ls, num_processes=24):
     for rel in rel_ls:
-        rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, para_ls_for_model, 
-                                                                    mode, pos_examples_idx)
-        my_model.write_all_rule_dicts(rel, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, mode)
+        # collect data
+        rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, my_model, num_rel, num_processes=num_processes)
+        # store the rules
+        my_model.write_all_rule_dicts(rel, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, cal_score=False, select_topK_rules=True)
+
+    return
+
+        
 
 
-def explore_all_rules_dict(rel_idx):
-    with open('output/learned_rules/' + dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-        rule_dict1 = json.load(f)
+def do_calculate_rule_scores(rel_ls, my_model, num_rel, train_edges, const_pattern_ls, num_processes=24):
+    for rel in tqdm(rel_ls, desc='rule summary: '):
+        # collect data
+        rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, my_model, num_rel, num_processes=num_processes)
+        # calculate score
+        my_model.write_all_rule_dicts(rel, rule_dict, rule_sup_num_dict, train_edges, const_pattern_ls, cal_score=True, select_topK_rules=False)
 
-    for k in rule_dict1.keys():
-        print(k, len(rule_dict1[k]))
-        # x = [r['score'] for r in rule_dict1[k] if r['score']>1e-30]
-        # print(min(x), max(x), len(x))
-        x = np.array([r['rule'] for r in rule_dict1[k]])
-        print(x.shape)
-        y = np.unique(x, axis=0)
-        print(y.shape)
-        y = np.unique(x[:,:int(k)], axis=0)
-        print(y.shape)
-        y = np.unique(x[:,:int(k)-1], axis=0)
-        print(y.shape)
-        print(' ')
+    return
+
+
+
+# def explore_all_rules_dict(rel_idx):
+#     with open('output/learned_rules/' + dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
+#         rule_dict1 = json.load(f)
+
+#     for k in rule_dict1.keys():
+#         print(k, len(rule_dict1[k]))
+#         # x = [r['score'] for r in rule_dict1[k] if r['score']>1e-30]
+#         # print(min(x), max(x), len(x))
+#         x = np.array([r['rule'] for r in rule_dict1[k]])
+#         print(x.shape)
+#         y = np.unique(x, axis=0)
+#         print(y.shape)
+#         y = np.unique(x[:,:int(k)], axis=0)
+#         print(y.shape)
+#         y = np.unique(x[:,:int(k)-1], axis=0)
+#         print(y.shape)
+#         print(' ')
+    
+#     return

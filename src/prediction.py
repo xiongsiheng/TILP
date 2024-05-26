@@ -1,51 +1,32 @@
-import random
-import numpy as np
-import sys
 import json
 from joblib import Parallel, delayed
-import time
 import os
-import pandas as pd
-import copy
-from collections import Counter
-from scipy.stats import norm
-
-from Models import TILP
+from tqdm import tqdm
 
 
-def my_predict(i, num_queries, num_processes, rel_idx, para_ls_for_model, train_edges, test_data, test_data_inv,
-                const_pattern_ls, assiting_data, dist_pars, train_edges_total):
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    rank_dict = my_model.predict_in_batch(i, num_queries, num_processes, rel_idx, train_edges, 
+
+
+
+def my_predict(my_model, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv,
+                const_pattern_ls, assiting_data, dist_pars, train_edges):
+    rank_dict = my_model.predict_in_batch(i, num_queries, num_processes, rel_idx, bg_pred, 
                                             test_data, test_data_inv,
-                                            const_pattern_ls, assiting_data, dist_pars, train_edges_total)
+                                            const_pattern_ls, assiting_data, dist_pars, train_edges)
     return rank_dict
 
 
 
-def do_my_predict(rel_ls, para_ls_for_model, train_edges, test_data, test_data_inv, 
-                    const_pattern_ls, assiting_data, dist_pars, train_edges_total):
-
-    num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_model
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
-    for this_rel in rel_ls:
-        num_processes = 24
-
-        start = time.time()
+def do_my_predict(rel_ls, my_model, dataset_using, bg_pred, test_data, test_data_inv, 
+                    const_pattern_ls, assiting_data, dist_pars, train_edges, num_processes = 24):
+    for this_rel in tqdm(rel_ls, desc='predicting: '):
         num_queries = len(test_data) // num_processes
         output = Parallel(n_jobs=num_processes)(
-            delayed(my_predict)(i, num_queries, num_processes, this_rel, para_ls_for_model, train_edges, 
-                                test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges_total) 
+            delayed(my_predict)(my_model, i, num_queries, num_processes, this_rel, bg_pred, 
+                                test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges) 
                                 for i in range(num_processes)
         )
-        end = time.time()
-
-        total_time = round(end - start, 6)
-        print("Inference finished in {} seconds.".format(total_time))
 
         rank_dict = {}
-
         for i in range(num_processes):
             rank_dict.update(output[i])
 
@@ -60,10 +41,7 @@ def evaluate_ranks(ranks):
     if num_samples==0:
         return {'hits_1': None, 'hits_3': None, 'hits_10': None, 'mrr': None}
 
-    hits_1 = 0.
-    hits_3 = 0.
-    hits_10 = 0.
-    mrr = 0.
+    hits_1, hits_3, hits_10, mrr = 0., 0., 0., 0.
 
     if isinstance(ranks, dict):
         k_ls = ranks.keys()
@@ -90,52 +68,52 @@ def evaluate_ranks(ranks):
     return {'hits_1': hits_1, 'hits_3': hits_3, 'hits_10': hits_10, 'mrr': mrr}
 
 
-def obtain_id_dict():
-    if dataset_using == 'YAGO':
-        with open('../data/YAGO11k/entity2id.txt') as f:
-            lines = f.readlines()
-    elif dataset_using == 'wiki':
-        with open('../data/WIKIDATA12k/entity2id.txt') as f:
-            lines = f.readlines()
+# def obtain_id_dict():
+#     if dataset_using == 'YAGO':
+#         with open('../data/YAGO11k/entity2id.txt') as f:
+#             lines = f.readlines()
+#     elif dataset_using == 'wiki':
+#         with open('../data/WIKIDATA12k/entity2id.txt') as f:
+#             lines = f.readlines()
 
 
-    id_dict = {}
-    for j in range(len(lines)):
-        line = lines[j]
-        z, id1 = line.strip().split('\t')[:2]
-        if dataset_using == 'YAGO':
-            id_dict[id1] = z[1:-1]
-        elif dataset_using == 'wiki':
-            id_dict[id1] = z
+#     id_dict = {}
+#     for j in range(len(lines)):
+#         line = lines[j]
+#         z, id1 = line.strip().split('\t')[:2]
+#         if dataset_using == 'YAGO':
+#             id_dict[id1] = z[1:-1]
+#         elif dataset_using == 'wiki':
+#             id_dict[id1] = z
 
-    return id_dict
+#     return id_dict
 
 
-def explore_ent_int_dict():
-    id_dict = obtain_id_dict()
-    cnt = 0
-    for j in range(len(test_data)):
-        line = test_data[j]
-        for k in [line[0], line[2]]:
-            if str(k) in ent_int_dict.keys():
-                if isinstance(ent_int_dict[str(k)][0], int):
-                    if not (ent_int_dict[str(k)][0]<=line[3]):
-                        print('err', j)
-                        print(k, id_dict[str(k)], ent_int_dict[str(k)])
-                        print(line)
-                        cnt += 1
-                        continue
-                if isinstance(ent_int_dict[str(k)][1], int):
-                    if not (ent_int_dict[str(k)][1]>=line[4]):
-                        if dataset_using == 'wiki':
-                            if line[1] in [17, 20]:
-                                continue
-                        print('err', j)
-                        print(k, id_dict[str(k)], ent_int_dict[str(k)])
-                        print(line)
-                        cnt += 1
-                        continue
-    print(cnt)
+# def explore_ent_int_dict():
+#     id_dict = obtain_id_dict()
+#     cnt = 0
+#     for j in range(len(test_data)):
+#         line = test_data[j]
+#         for k in [line[0], line[2]]:
+#             if str(k) in ent_int_dict.keys():
+#                 if isinstance(ent_int_dict[str(k)][0], int):
+#                     if not (ent_int_dict[str(k)][0]<=line[3]):
+#                         print('err', j)
+#                         print(k, id_dict[str(k)], ent_int_dict[str(k)])
+#                         print(line)
+#                         cnt += 1
+#                         continue
+#                 if isinstance(ent_int_dict[str(k)][1], int):
+#                     if not (ent_int_dict[str(k)][1]>=line[4]):
+#                         if dataset_using == 'wiki':
+#                             if line[1] in [17, 20]:
+#                                 continue
+#                         print('err', j)
+#                         print(k, id_dict[str(k)], ent_int_dict[str(k)])
+#                         print(line)
+#                         cnt += 1
+#                         continue
+#     print(cnt)
 
 
 def do_evaluate(rel_ls, dataset_using):
@@ -152,13 +130,11 @@ def do_evaluate(rel_ls, dataset_using):
 
         all_ranks.update(x)
         res_dict[i] = evaluate_ranks(x)
-        print('rel', i)
+        print('Relation ' + str(i) + ':')
         print(res_dict[i])
-
 
     res_dict['total'] = evaluate_ranks(all_ranks)
     res_dict['total']['num_samples'] = len(all_ranks)
-    print('total:')
-    print('num_samples', len(all_ranks))
+    print('Total: num_samples = ' + str(len(all_ranks)))
     print(evaluate_ranks(all_ranks))
     return res_dict

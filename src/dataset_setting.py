@@ -57,7 +57,7 @@ def do_normal_setting_for_dataset(dataset_name1, num_rel):
     return train_edges, valid_data, valid_data_inv, test_data, test_data_inv
 
 
-def split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=None):
+def split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=-1):
     pos_examples_idx = []
     bg_train = []
     bg_pred = []
@@ -83,22 +83,20 @@ def split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample
     # else:
     #     print('bg_pred.txt does not exist')
 
+   
+    pos_examples_idx = np.array(list(range(len(train_edges)))) if len(pos_examples_idx) == 0 else pos_examples_idx
 
+    if num_sample_per_rel > 0:
+        pos_examples_idx_sample = []
+        for rel_idx in range(num_rel):
+            cur_pos_examples_idx = pos_examples_idx[train_edges[:, 1] == rel_idx]
+            np.random.shuffle(cur_pos_examples_idx)
+            pos_examples_idx_sample.append(cur_pos_examples_idx[:num_sample_per_rel])
 
-    if len(pos_examples_idx) == 0:
-        pos_examples_idx = np.array(list(range(len(train_edges))))
+        pos_examples_idx_sample = np.hstack(pos_examples_idx_sample)
+        pos_examples_idx = pos_examples_idx_sample
 
-        if num_sample_per_rel is not None:
-            pos_examples_idx_sample = []
-            for rel_idx in range(num_rel):
-                cur_pos_examples_idx = pos_examples_idx[train_edges[:, 1] == rel_idx]
-                np.random.shuffle(cur_pos_examples_idx)
-                pos_examples_idx_sample.append(cur_pos_examples_idx[:num_sample_per_rel])
-
-            pos_examples_idx_sample = np.hstack(pos_examples_idx_sample)
-            pos_examples_idx = pos_examples_idx_sample
-
-        pos_examples_idx = pos_examples_idx.tolist()
+    pos_examples_idx = pos_examples_idx.tolist()
 
     if len(bg_train) == 0:
         bg_train = train_edges.copy()
