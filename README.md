@@ -1,4 +1,4 @@
-## TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs
+## [ICLR23] TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs
 This repository contains the code for the paper [TILP: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs](https://openreview.net/pdf?id=_X12NmQKvX).
 
 A follow-up work for **time prediction** over knowledge graphs via **logical reasoning** is available [here](https://github.com/xiongsiheng/TEILP).
@@ -59,7 +59,9 @@ TILP/
     └── rank_dict/
 ```
 
-To run the code, simply use the command
+To run the code, simply use the command. 
+
+All the settings and corresponding explanations are provided as in-context comments.
 ```sh
 cd src
 python main.py
