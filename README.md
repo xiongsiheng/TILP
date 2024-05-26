@@ -32,7 +32,7 @@ $$
 
 
 
-## How to run
+## Quick Start
 To run the code, you need to first set up the environment given in requirements.txt.
 
 It is recommended to use anaconda for installation.
@@ -65,6 +65,8 @@ cd src
 python main.py
 ```
 
+## Contact
+If you have any inquiries, please feel free to raise an issue or reach out to sxiong45@gatech.edu.
 
 ## Citation
 ```
