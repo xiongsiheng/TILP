@@ -73,11 +73,11 @@ If you have any inquiries, please feel free to raise an issue or reach out to sx
 ## Citation
 ```
 @inproceedings{
-xiong2023tilp,
-title={{TILP}: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs},
-author={Siheng Xiong and Yuan Yang and Faramarz Fekri and James Clayton Kerce},
-booktitle={The Eleventh International Conference on Learning Representations },
-year={2023},
-url={https://openreview.net/forum?id=_X12NmQKvX}
+  xiong2023tilp,
+  title={{TILP}: Differentiable Learning of Temporal Logical Rules on Knowledge Graphs},
+  author={Siheng Xiong and Yuan Yang and Faramarz Fekri and James Clayton Kerce},
+  booktitle={The Eleventh International Conference on Learning Representations },
+  year={2023},
+  url={https://openreview.net/forum?id=_X12NmQKvX}
 }
 ```
