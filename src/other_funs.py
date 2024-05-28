@@ -10,12 +10,12 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import TILP
+from Models import *
 
 
 
 def my_create_rule_supplement(i, n_q, n_p, rel_idx):
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model = Collector(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     q_idx = my_model.create_training_idx_in_batch(i, n_q, n_p, rel_idx)
     rule_sup = my_model.create_rule_supplement(rel_idx, q_idx)
     return rule_sup
@@ -36,7 +36,7 @@ def do_my_create_rule_supplement(rel_idx):
     print("Learning finished in {} seconds.".format(total_time))
 
     rule_sup = output[0]
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model = Collector(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
     for i in range(1, n_p):
         for k in rule_sup.keys():

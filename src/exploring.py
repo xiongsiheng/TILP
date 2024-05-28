@@ -10,7 +10,7 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import TILP
+from Models import *
 
 
 def do_explore_queries():

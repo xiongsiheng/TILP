@@ -1,16 +1,17 @@
+import os
+import glob
 import json
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from Models import TILP
-import os
-import glob
+from Models import *
+
 
 
 
 
 def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, model_paras, 
                 path_name='', pos_examples_idx=None, time_shift_mode=0):
-    my_model = TILP(*model_paras)
+    my_model = Walker(*model_paras)
     my_model.apply_in_batch(i, num_queries, num_processes, rel_idx, mode, train_edges, 
                                     path_name, pos_examples_idx, time_shift_mode)
 

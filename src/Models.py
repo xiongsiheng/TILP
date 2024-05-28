@@ -12,73 +12,561 @@ import tensorflow as tf
 from tqdm import tqdm
 from collections import defaultdict
 
+from utlis import gadgets
 
 
 
-class TILP(object):
+
+class Walker(gadgets):
     def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        self.num_rel = num_rel
-        self.num_pattern = num_pattern
-        self.num_ruleLen = num_ruleLen
-        self.dataset_using = dataset_using
+        super(Walker, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
 
-        if self.dataset_using == 'wiki':
-            self.num_entites = 12554
-            self.prob_cal_alpha = 1  # do sampling when calculating arriving rate for training
-        elif self.dataset_using == 'YAGO':
-            self.num_entites = 10623
-            self.prob_cal_alpha = 1
+    def create_adj_mat(self, masked_facts):
+        edges_simp = masked_facts[:,[0,2]]
+        edges_simp = np.unique(edges_simp, axis=0)
+        edges_simp = edges_simp.astype(int)
+        pos = list(edges_simp)
+        rows, cols = zip(*pos)
 
-        self.num_train_samples_max = 100000
-        self.batch_size = 128
-        self.num_epoch_min = 10
-        self.save_weights = True
+        adj_mat = np.zeros((self.num_entites, self.num_entites))
+        adj_mat[rows, cols] = 1
 
-        self.max_explore_len = num_ruleLen
-        self.overall_mode = overall_mode
-        self.num_paths_dict = num_paths_dict
+        return adj_mat
 
-        self.rnn_query_embed_size = 128
-        self.rnn_state_size = 128
-        self.rnn_batch_size = 1
-        self.rnn_num_layer = 1
 
+    def path_search(self, masked_facts, query, time_shift_mode):
         '''
         Different TR setting:
         f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
         f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
         f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
         '''
-        self.f_non_Markovian = True # consider non-Markovian constraints
-        self.f_adjacent_TR_only = True # consider adjacent TRs only
+        rule_dict = {}
 
-        self.f_Wc_ts = False # consider intermediate nodes for temporal feature modeling
-        self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
+        adj_mat = self.create_adj_mat(masked_facts)
+        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
+        
+        if len(cur_num_hops1) > 0:
+            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
+            for num in cur_num_hops1:
+                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+                walk_edges = []
+                for i in range(num):
+                    related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+                    walk_edges.append(related_facts[:,[0,1,3,4,2]]) # [s, r, ts, te, o]
 
-        # add shallow layers to enhance expressiveness
-        self.gamma_shallow = 0.2
-        self.shallow_score_length = 400
+                cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "ts_", "te_"]).to_numpy()
+                # print(cur_ent_walk_res)
 
+                if len(cur_ent_walk_res) == 0:
+                    continue
+
+                rules = cur_ent_walk_res[:, [4*i+1 for i in range(num)]] # extarct all r in the path
+
+                for i in range(num):
+                    # TR(I_i, I_q)
+                    if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != num-1:
+                        # instead of considering all TR, we only preserve adjacent TR: TR(I_1, I_q), TR(I_N, I_q)
+                        continue
+                    cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], query[3:]).reshape((-1,1))
+                    rules = np.hstack((rules, cur_TR))
+
+                if self.f_non_Markovian:
+                    # TR(I_i, I_j)
+                    for i in range(num-1):
+                        for j in range(i+1, num):
+                            if self.f_adjacent_TR_only and j != i + 1:
+                                # instead of considering all TR, we preserve adjacent TR: TR(I_i, I_i+1)
+                                continue
+                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], cur_ent_walk_res[:, 4*j+2:4*j+4]).reshape((-1,1))
+                            rules = np.hstack((rules, cur_TR))
+                
+                rules = np.unique(rules, axis=0).tolist()
+                # print(rules)
+
+                for r in rules:
+                    if time_shift_mode in [-1, 1]:
+                        if self.f_adjacent_TR_only and time_shift_mode in r[num:num + 1 + int(num>1)]: # we only consider adjacent TR
+                            continue
+                        if (not self.f_adjacent_TR_only) and time_shift_mode in r[num:num*2]:
+                            continue                                             
+                    rule_dict[num] = [] if num not in rule_dict else rule_dict[num]
+                    rule_dict[num].append({'rule': r, 'alpha': 'Unknown'})
+
+        return rule_dict
+
+
+
+    def calculate_ts_dist(self, path2, masked_facts, query, time_shift_mode):        
+        # Todo: consider time shifting setting
+        t_s_dict = {}
+        for k1 in range(self.num_rel):
+            t_s_dict[k1] = []
+
+        adj_mat = self.create_adj_mat(masked_facts)
+        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
+        
+        if len(cur_num_hops1) > 0:
+            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
+            for num in cur_num_hops1:
+                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+                for i in range(num):
+                    z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+                    for z1 in z:
+                        t_s_dict[z1[1]].append(z1[3]-query[3])
+
+            for k1 in t_s_dict.keys():   
+                t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
+            with open(path2, 'w') as f:
+                json.dump(t_s_dict, f)
+        return 
+
+
+
+    def alpha_calculation(self, path1, masked_facts, query, time_shift_mode):
+        rule_dict = {}
+        if not os.path.exists(path1):
+            return rule_dict
+        with open(path1, 'r') as f:
+            rule_dict_loaded = json.load(f)
+        
         if self.overall_mode == 'general':
-            self.weights_savepath = '../output/train_weights/train_weights_' + self.dataset_using
+            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
         elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-            self.weights_savepath = '../output/train_weights_'+ self.overall_mode +'/train_weights_'\
-                                     + self.dataset_using
+            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
+
+        TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
+        masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
+        masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
+
+        for num in rule_dict_loaded:
+            rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
+            for r in rules:
+                if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
+                    continue
+                if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
+                    continue
+                # print(r)
+                # Instead of calculating alpha for all rules, we select most frequent ones
+                rand_num = random.random()
+                if rand_num <= self.prob_cal_alpha:
+                    cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
+                    # print(cur_dict)
+                    
+                    # if we use path sampling, it's possible we cannot find the targ node
+                    # alpha = 0.01 
+                    # if query[2] in cur_dict.keys():
+                    #     alpha = cur_dict[query[2]]
+                    
+                    alpha = cur_dict[query[2]]
+                else:
+                    alpha = 'Unknown'
+
+                if num not in rule_dict:
+                    rule_dict[num] = []
+                rule_dict[num].append({'rule': r, 'alpha': alpha})
+        return rule_dict
 
 
-    def obtain_valid_train_idx(self, idx_range):
-        valid_train_idx = []
-        for idx in idx_range:
-            if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+    def apply_single_rule(self, start_node, rule, rule_Len, facts, 
+                                f_print=0, return_walk=False, targ_node=None, 
+                                return_edges=False):
+        rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
+        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), ...] if only adjacent TRs are considered else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), ...]
 
-            if not os.path.exists(path):
+        path_ls = []
+        cur_nodes = [int(start_node)]
+        facts = facts.astype(int) # [s, r, o, TR(I, I_q), ts, te]
+
+        for i in range(rule_Len):
+            if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != rule_Len - 1:
+                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i])]
+            else:
+                # if only adjacent TRs are considered
+                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[min(i, 1)])] if self.f_adjacent_TR_only else \
+                            facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[i])]
+  
+            # print(cur_edges.shape)
+            # print(cur_edges)
+            # print('---------------------')
+
+            if len(cur_edges) == 0:
+                if return_edges:
+                    return []
+                return ({}, []) if return_walk else {}
+                
+            cur_nodes = cur_edges[:, 2]
+            path_ls.append(cur_edges[:,[0,1,4,5,2]])
+
+        if isinstance(targ_node, int) or isinstance(targ_node, float):
+            path_ls[-1] = path_ls[-1][path_ls[-1][:,-1] == targ_node]
+
+        if return_edges:
+            return path_ls
+       
+        heads = ['entity_', 'rel_', 'ts_', 'te_'] # we need to remove path that contains repeated edges
+        cur_ent_walk_res = self.get_walks(path_ls, heads, rule, rule_Len).to_numpy()
+        cur_nodes = cur_ent_walk_res[:,-1:]
+
+        if f_print:
+            print(cur_ent_walk_res)
+
+        path_ls = []
+        cur_ent_walk_res = 0 if not return_walk else cur_ent_walk_res
+
+        df = pd.DataFrame(cur_nodes, columns=["end_node"], dtype=int)
+        res = df["end_node"].value_counts(normalize=True).to_dict()
+
+        return (res, cur_ent_walk_res) if return_walk else res
+       
+
+
+    def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, mode='path_search'):
+        '''
+        mode: 'path_search' or 'alpha_calculation'
+        1) path_search: given a query, find all paths that satisfy the query
+        2) alpha_calculation: given a query, calculate alpha for all rules
+        '''
+        assert mode in ['path_search', 'alpha_calculation']
+        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
+
+        idx_ls1 = idx_ls if idx_ls is not None else range(len(train_edges))
+
+        for idx in idx_ls1:
+            path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
+            path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+
+            query = train_edges[idx]
+            # print(query, idx)
+
+            if isinstance(rel_idx, int) and (query[1] != rel_idx):
                 continue
-            valid_train_idx.append(idx)
-        return valid_train_idx
 
+            if (pos_examples_idx is not None) and (idx not in pos_examples_idx):
+                continue
+
+            # mask ori query and inv query in the train set
+            masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
+            masked_facts = masked_facts[masked_facts[:,3]<=query[3]] if self.overall_mode == 'time_shifting' else masked_facts
+            
+            if mode == 'path_search':
+                rule_dict = self.path_search(masked_facts, query, time_shift_mode)
+            else:
+                rule_dict = self.alpha_calculation(path1, masked_facts, query, time_shift_mode)
+            
+            with open(path1, 'w') as f:
+                json.dump(rule_dict, f)
+
+            if self.f_Wc_ts:
+                self.calculate_ts_dist(path2, masked_facts, query, time_shift_mode)
+
+        return 
+
+
+
+    def apply_in_batch(self, i, num_queries, num_processes, rel_idx, mode, train_edges, path_name='', 
+                            pos_examples_idx=None, time_shift_mode=0):
+        queries_idx = self.create_training_idx_in_batch(i, num_queries, num_processes, rel_idx, train_edges)
+        self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode, mode=mode)
+
+        return
+
+
+    def BFS_mat_ver2(self, st_node, adj_mat, num_nodes, targ_node, max_len):
+        node_st = np.zeros((num_nodes, 1))
+        node_st[int(st_node)] = 1
+        res = node_st.copy()
+
+
+        new_nodes_ls =[[int(st_node)]]
+        num_hops = []
+        for i in range(max_len):
+            res = np.dot(adj_mat, res)
+            res[res>1] = 1
+
+            idx_ls = np.where(res==1)[0]
+
+            # cur_new_idx_ls = list(set(idx_ls)-set(idx_ls_old))
+            cur_new_idx_ls = idx_ls.copy()
+            if len(cur_new_idx_ls) > 0:
+                new_nodes_ls.append(cur_new_idx_ls)
+
+            if res[int(targ_node)] == 1:
+                num_hops.append(i+1)
+                # res[targ_node] = 0
+
+        return num_hops, new_nodes_ls
+
+
+    def get_walks(self, walk_edges, columns, rule=None, rule_Len=0):
+        df_edges = []
+        df = pd.DataFrame(
+            walk_edges[0],
+            columns=[c + str(0) for c in columns] + ["entity_" + str(1)],
+            dtype=int,
+        )
+
+        df_edges.append(df)
+        df = df[0:0]
+
+        for i in range(1, len(walk_edges)):
+            df = pd.DataFrame(
+                walk_edges[i],
+                columns=[c + str(i) for c in columns] + ["entity_" + str(i+1)],
+                dtype=int,
+            )
+
+            df_edges.append(df)
+            df = df[0:0]
+
+        rule_walks = df_edges[0]
+        df_edges[0] = df_edges[0][0:0]
+
+        idx_TR_ls = 0
+        for i in range(1, len(df_edges)):
+            rule_walks = pd.merge(rule_walks, df_edges[i], on=["entity_" + str(i)])
+            rule_walks = self.remove_matching_rows(rule_walks) # remove path that contains repeated edges 
+            if (rule is not None) and (self.f_non_Markovian):
+                if self.f_adjacent_TR_only:
+                    # remove path that does not satisfy the TR constraint
+                    rule_walks_np = rule_walks.to_numpy()
+                    idx_st = 4*(i-1) + 2 # [s, r, t_s, t_e, o]
+                    idx_ed = 4*i + 2
+                    # # since we remove previous time information
+                    # idx_st -= 2*(i-1)
+                    # idx_ed -= 2*(i-1)
+                    cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
+                    mask = pd.Series(cur_TR == rule[rule_Len+i+1])
+                    rule_walks = rule_walks[mask]
+
+                    # remove previous time information (we cannot since we need to remove path that contains repeated edges)
+                    # preserve_list_row = [1] * i + [0, 0, 1, 1, 1, 1]
+                    # if i == len(df_edges)-1:
+                    #     preserve_list_row = [1] * i + [0, 0, 1, 0, 0, 1] # remove the last time information
+                    # mask_row = pd.Series(preserve_list_row, index=rule_walks.columns).astype(bool)
+                    # rule_walks = rule_walks.loc[:, mask_row]
+                else:
+                    # remove path that does not satisfy the TR constraint
+                    rule_walks_np = rule_walks.to_numpy()
+                    idx_ed = 4*i + 2
+                    for j in range(i):
+                        idx_st = 4*j + 2
+                        cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
+                        mask = pd.Series(cur_TR == rule[rule_Len*2 + idx_TR_ls])
+                        idx_TR_ls += 1
+                        rule_walks = rule_walks[mask]
+
+            df_edges[i] = df_edges[i][0:0]
+        
+        return rule_walks
+
+
+    def obtain_sp_rule_walks(self, ent_walks, rule, rule_Len, facts):
+        rel_ls = rule[:rule_Len]
+        pattern_ls = rule[rule_Len:]
+
+        path_ls = []
+        for i in range(rule_Len):
+            y = facts[np.isin(facts[:, 0], ent_walks[:,i]) & (facts[:, 1] == rel_ls[i]) & \
+                                np.isin(facts[:, 2], ent_walks[:,i+1]) & (facts[:, 3] == pattern_ls[i])]
+            path_ls.append(y[:, [0,4,5,2]])
+
+        # print(path_ls)
+
+        z = ['entity_', 'ts_', 'te_']
+        cur_ent_walk_res = self.get_walks(path_ls, z).to_numpy()
+        path_ls = []
+
+        sp_ls = []
+        for i1 in range(1, rule_Len):
+            for i2 in range(i1):
+                # print(i1,i2)
+                x = self.obtain_tmp_rel(cur_ent_walk_res[:,3*i1+1:3*i1+3], cur_ent_walk_res[:,3*i2+1:3*i2+3])
+                sp_ls.append(x.reshape(-1,1))
+
+        y = cur_ent_walk_res[:, [3*i1 for i1 in range(rule_Len)]]
+
+        x = np.hstack([y, np.hstack(sp_ls), cur_ent_walk_res[:,-1:]])
+        x = np.unique(x, axis=0)
+        return x[:, rule_Len:]
+
+
+    # def explore(self, j, train_edges):
+    #     line = train_edges[j,:]
+    #     masked_facts = np.delete(train_edges, [j, self.get_inv_idx(int(len(train_edges)/2), j)], 0)
+
+    #     edges_simp = masked_facts[:,[0,2]]
+    #     edges_simp = np.unique(edges_simp, axis=0)
+    #     edges_simp = edges_simp.astype(int)
+    #     pos = list(edges_simp)
+    #     rows, cols = zip(*pos)
+
+    #     adj_mat = np.zeros((self.num_entites, self.num_entites))
+    #     adj_mat[rows, cols] = 1
+
+    #     cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
+
+    #     ent_walk_res = {}
+    #     # print(line)
+    #     if len(cur_num_hops1) > 0:
+    #         cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
+
+    #         for num in cur_num_hops1:
+    #             path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+
+
+    #             walk_edges = []
+    #             for i in range(num):
+    #                 related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])
+    #                                                       & (masked_facts[:,3]<=line[3])]
+    #                 f_x = 0
+    #                 if len(related_facts) == 0:
+    #                     related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+    #                     f_x = 1
+    #                 z = np.unique(related_facts[:,:3], axis=0)
+    #                 y = []
+    #                 for edge in z:
+    #                     x = np.all(related_facts[:,:3] == edge, axis=1)
+    #                     if f_x == 0:
+    #                         t_s = max(related_facts[x][:,3])
+    #                         t_e = max(related_facts[x & (related_facts[:,3] == t_s)][:,4])
+    #                     else:
+    #                         t_s = min(related_facts[x][:,3])
+    #                         t_e = min(related_facts[x & (related_facts[:,3] == t_s)][:,4])
+    #                     y.append([edge[0], edge[1], t_s, t_e, edge[2]])
+
+                    
+    #                 related_facts = np.array(y)
+    #                 walk_edges.append(related_facts)
+
+    #             cur_ent_walk_res = self.get_walks(walk_edges, ["entity_", "rel_", "ts_", "te_"]).to_numpy()
+
+    #             cur_ent_walk_res = self.check_path_rep_v2(cur_ent_walk_res, num)
+
+    #             if len(cur_ent_walk_res)>0:
+    #                 x = []
+    #                 for i1 in range(num):
+    #                     x.append(cur_ent_walk_res[:, 4*i1+1].reshape((-1,1)))
+
+    #                 for i1 in range(num):
+    #                     x.append(self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i1+2: 4*i1+4], line[3:]).reshape((-1,1)))
+
+    #                 for i1 in range(1, num):
+    #                     for i2 in range(i1):
+    #                         x.append(self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i1+2: 4*i1+4], cur_ent_walk_res[:, 4*i2+2: 4*i2+4]).reshape((-1,1)))
+
+    #                 x = np.hstack(x)
+    #                 ent_walk_res[num] = np.unique(x, axis=0).tolist()
+
+    #     return 
+
+
+
+    # def explore_in_batch(self, i, num_queries, num_processes, train_edges):
+    #     x = len(train_edges)//2
+    #     num_rest_queries = x - (i + 1) * num_queries
+    #     if (num_rest_queries >= num_queries) and (i + 1 < num_processes):
+    #         queries_idx = range(i * num_queries, (i + 1) * num_queries)
+    #     else:
+    #         queries_idx = range(i * num_queries, x)
+
+    #     for idx in queries_idx:
+    #         self.explore(idx, train_edges)
+
+    #     return 
+
+
+
+    # def explore_queries_v2(self, j, train_edges, test_data, test_data_using=None):
+    #     if not isinstance(test_data_using, np.ndarray):
+    #         test_data_using = test_data
+
+    #     line = test_data_using[j,:]
+    #     # print(line)
+
+    #     edges_simp = train_edges[:,[0,2]]
+    #     edges_simp = np.unique(edges_simp, axis=0)
+    #     edges_simp = edges_simp.astype(int)
+    #     pos = list(edges_simp)
+    #     rows, cols = zip(*pos)
+
+    #     adj_mat = np.zeros((self.num_entites, self.num_entites))
+    #     adj_mat[rows, cols] = 1
+
+    #     x = self.obtain_tmp_rel(train_edges[:, 3:], line[3:]).reshape((-1,1))
+    #     x = np.hstack((train_edges[:, :3], x))
+    #     x = np.unique(x, axis=0)
+    #     x = x.astype(int)
+
+    #     cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
+
+    #     ent_walk_res = {}
+    #     if len(cur_num_hops1) > 0:
+    #         cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
+    #         for num in cur_num_hops1:
+    #             path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+    #             walk_edges = []
+    #             for i in range(num):
+    #                 related_facts = x[np.isin(x[:,0], path_ls[i]) & np.isin(x[:,2], path_ls[i+1])]
+    #                 walk_edges.append(related_facts[:,[0,1,3,2]])
+    #             cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "tmpRel_"]).to_numpy()
+    #             # print(cur_ent_walk_res)
+    #             if len(cur_ent_walk_res)>0:
+    #                 y = cur_ent_walk_res[:, [3*i+1 for i in range(num)] + [3*i+2 for i in range(num)]]
+    #                 y = np.unique(y, axis=0)
+    #                 # print(y)
+    #                 ent_walk_res[num] = y.tolist()
+
+    #     return ent_walk_res
+
+
+    # def check_path_rep_v3(self, ent_walk_res, path_len, rel_ls):
+    #     # print(ent_walk_res)
+    #     for i in range(path_len-1):
+    #         for j in range(i+1, path_len):
+    #             if self.get_inv_idx(num_rel//2, rel_ls[i]) == rel_ls[j]:
+    #                 ent_walk_res = ent_walk_res[np.invert(
+    #                                                     (ent_walk_res[:,3*i] == ent_walk_res[:,3*j+3])\
+    #                                                     & (ent_walk_res[:,3*i+3] == ent_walk_res[:,3*j])\
+    #                                                     & np.all(ent_walk_res[:,3*i+1:3*i+3] == ent_walk_res[:,3*j+1:3*j+3], axis=1)
+    #                                                         )]
+    #             if rel_ls[i] == rel_ls[j]:
+    #                 ent_walk_res = ent_walk_res[np.invert(np.all(ent_walk_res[:,3*i:3*i+4] == ent_walk_res[:,3*j:3*j+4], axis=1))]
+
+    #     x = []
+    #     for i in range(path_len):
+    #         x += [3*i+1, 3*i+2]
+    #     x += [-1]
+
+    #     ent_walk_res = ent_walk_res[:, x]
+    #     # print(ent_walk_res)
+    #     return ent_walk_res
+
+
+    # def apply_specific_rules_v2(self, rule_walks, sp_rules):
+    #     res_dict = {}
+    #     for sp_r in sp_rules:
+    #         x = rule_walks[np.all(rule_walks[:,:-1] == sp_r['rule'], axis=1), -1:]
+    #         df = pd.DataFrame(x, columns=["end_node"], dtype=int)
+    #         cur_dict = df["end_node"].value_counts(normalize=True).to_dict()
+    #         for k in cur_dict.keys():
+    #             cur_dict[k] = cur_dict[k] * sp_r['score']
+    #         res_dict = self.my_merge_dict(res_dict, cur_dict)
+
+    #     return res_dict
+
+
+
+
+
+
+class Trainer(gadgets):
+    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
+        super(Trainer, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
 
     def build_inputs(self):
         rel_dict, TR_dict, alpha_dict = {}, {}, {}
@@ -134,25 +622,6 @@ class TILP(object):
 
         return rel_dict, TR_dict, alpha_dict, TR_ls_len, valid_train_idx, feed_list, init
 
-
-    def save_weighs(self, targ_rel_ls, res_attn_rel_dict, res_attn_TR_dict, res_attn_TR_prime_dict, res_attn_ruleLen_dict, res_attn_shallow_score):
-        for rel_idx in targ_rel_ls:
-            if rel_idx not in res_attn_rel_dict:
-                continue
-            my_res = {}
-            my_res['attn_rel_ls'] = self.my_convert_to_list(res_attn_rel_dict[rel_idx])
-            my_res['attn_TR_ls'] = self.my_convert_to_list(res_attn_TR_dict[rel_idx])
-            if self.f_non_Markovian:
-                my_res['attn_TR_prime_ls'] = self.my_convert_to_list(res_attn_TR_prime_dict[rel_idx])
-            my_res['attn_ruleLen'] = res_attn_ruleLen_dict[rel_idx].tolist()
-
-            my_res['shallow_score'] = res_attn_shallow_score[rel_idx].tolist()
-            my_res['shallow_rule_dict'] = self.shallow_rule_dict[rel_idx]
-
-            if self.save_weights:
-                cur_path = self.get_weights_savepath_v2(rel_idx)
-                with open(cur_path, 'w') as f:
-                    json.dump(my_res, f)
 
 
     def TRL_model_training_v2(self, targ_rel_ls, num_epoch, train_edges, const_pattern_ls):
@@ -431,647 +900,6 @@ class TILP(object):
         return loss_avg
 
 
-
-
-    def create_adj_mat(self, masked_facts):
-        edges_simp = masked_facts[:,[0,2]]
-        edges_simp = np.unique(edges_simp, axis=0)
-        edges_simp = edges_simp.astype(int)
-        pos = list(edges_simp)
-        rows, cols = zip(*pos)
-
-        adj_mat = np.zeros((self.num_entites, self.num_entites))
-        adj_mat[rows, cols] = 1
-
-        return adj_mat
-
-
-
-    def path_search(self, masked_facts, query, time_shift_mode):
-        '''
-        Different TR setting:
-        f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
-        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
-        f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
-        '''
-        rule_dict = {}
-
-        adj_mat = self.create_adj_mat(masked_facts)
-        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
-        
-        if len(cur_num_hops1) > 0:
-            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
-            for num in cur_num_hops1:
-                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-                walk_edges = []
-                for i in range(num):
-                    related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                    walk_edges.append(related_facts[:,[0,1,3,4,2]]) # [s, r, ts, te, o]
-
-                cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "ts_", "te_"]).to_numpy()
-                # print(cur_ent_walk_res)
-
-                if len(cur_ent_walk_res) == 0:
-                    continue
-
-                rules = cur_ent_walk_res[:, [4*i+1 for i in range(num)]] # extarct all r in the path
-
-                for i in range(num):
-                    # TR(I_i, I_q)
-                    if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != num-1:
-                        # instead of considering all TR, we only preserve adjacent TR: TR(I_1, I_q), TR(I_N, I_q)
-                        continue
-                    cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], query[3:]).reshape((-1,1))
-                    rules = np.hstack((rules, cur_TR))
-
-                if self.f_non_Markovian:
-                    # TR(I_i, I_j)
-                    for i in range(num-1):
-                        for j in range(i+1, num):
-                            if self.f_adjacent_TR_only and j != i + 1:
-                                # instead of considering all TR, we preserve adjacent TR: TR(I_i, I_i+1)
-                                continue
-                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], cur_ent_walk_res[:, 4*j+2:4*j+4]).reshape((-1,1))
-                            rules = np.hstack((rules, cur_TR))
-                
-                rules = np.unique(rules, axis=0).tolist()
-                # print(rules)
-
-                for r in rules:
-                    if time_shift_mode in [-1, 1]:
-                        if self.f_adjacent_TR_only and time_shift_mode in r[num:num + 1 + int(num>1)]: # we only consider adjacent TR
-                            continue
-                        if (not self.f_adjacent_TR_only) and time_shift_mode in r[num:num*2]:
-                            continue                                             
-                    rule_dict[num] = [] if num not in rule_dict else rule_dict[num]
-                    rule_dict[num].append({'rule': r, 'alpha': 'Unknown'})
-
-        return rule_dict
-
-
-
-    def calculate_ts_dist(self, path2, masked_facts, query, time_shift_mode):        
-        # Todo: consider time shifting setting
-        t_s_dict = {}
-        for k1 in range(self.num_rel):
-            t_s_dict[k1] = []
-
-        adj_mat = self.create_adj_mat(masked_facts)
-        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
-        
-        if len(cur_num_hops1) > 0:
-            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
-            for num in cur_num_hops1:
-                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-                for i in range(num):
-                    z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                    for z1 in z:
-                        t_s_dict[z1[1]].append(z1[3]-query[3])
-
-            for k1 in t_s_dict.keys():   
-                t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
-            with open(path2, 'w') as f:
-                json.dump(t_s_dict, f)
-        return 
-
-
-
-    def alpha_calculation(self, path1, masked_facts, query, time_shift_mode):
-        rule_dict = {}
-        if not os.path.exists(path1):
-            return rule_dict
-        with open(path1, 'r') as f:
-            rule_dict_loaded = json.load(f)
-        
-        if self.overall_mode == 'general':
-            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
-                rule_dict_summarized = json.load(f)
-        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
-                rule_dict_summarized = json.load(f)
-
-        TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
-        masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
-        masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
-
-        for num in rule_dict_loaded:
-            rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
-            for r in rules:
-                if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
-                    continue
-                if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
-                    continue
-                # print(r)
-                # Instead of calculating alpha for all rules, we select most frequent ones
-                rand_num = random.random()
-                if rand_num <= self.prob_cal_alpha:
-                    cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
-                    # print(cur_dict)
-                    
-                    # if we use path sampling, it's possible we cannot find the targ node
-                    # alpha = 0.01 
-                    # if query[2] in cur_dict.keys():
-                    #     alpha = cur_dict[query[2]]
-                    
-                    alpha = cur_dict[query[2]]
-                else:
-                    alpha = 'Unknown'
-
-                if num not in rule_dict:
-                    rule_dict[num] = []
-                rule_dict[num].append({'rule': r, 'alpha': alpha})
-        return rule_dict
-
-
-
-    def apply_single_rule(self, start_node, rule, rule_Len, facts, 
-                                f_print=0, return_walk=False, targ_node=None, 
-                                return_edges=False):
-        rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
-        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), ...] if only adjacent TRs are considered else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), ...]
-
-        path_ls = []
-        cur_nodes = [int(start_node)]
-        facts = facts.astype(int) # [s, r, o, TR(I, I_q), ts, te]
-
-        for i in range(rule_Len):
-            if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != rule_Len - 1:
-                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i])]
-            else:
-                # if only adjacent TRs are considered
-                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[min(i, 1)])] if self.f_adjacent_TR_only else \
-                            facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[i])]
-  
-            # print(cur_edges.shape)
-            # print(cur_edges)
-            # print('---------------------')
-
-            if len(cur_edges) == 0:
-                if return_edges:
-                    return []
-                return ({}, []) if return_walk else {}
-                
-            cur_nodes = cur_edges[:, 2]
-            path_ls.append(cur_edges[:,[0,1,4,5,2]])
-
-        if isinstance(targ_node, int) or isinstance(targ_node, float):
-            path_ls[-1] = path_ls[-1][path_ls[-1][:,-1] == targ_node]
-
-        if return_edges:
-            return path_ls
-       
-        heads = ['entity_', 'rel_', 'ts_', 'te_'] # we need to remove path that contains repeated edges
-        cur_ent_walk_res = self.get_walks(path_ls, heads, rule, rule_Len).to_numpy()
-        cur_nodes = cur_ent_walk_res[:,-1:]
-
-        if f_print:
-            print(cur_ent_walk_res)
-
-        path_ls = []
-        cur_ent_walk_res = 0 if not return_walk else cur_ent_walk_res
-
-        df = pd.DataFrame(cur_nodes, columns=["end_node"], dtype=int)
-        res = df["end_node"].value_counts(normalize=True).to_dict()
-
-        return (res, cur_ent_walk_res) if return_walk else res
-       
-
-
-
-
-    def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, mode='path_search'):
-        '''
-        mode: 'path_search' or 'alpha_calculation'
-        1) path_search: given a query, find all paths that satisfy the query
-        2) alpha_calculation: given a query, calculate alpha for all rules
-        '''
-        assert mode in ['path_search', 'alpha_calculation']
-        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
-
-        idx_ls1 = idx_ls if idx_ls is not None else range(len(train_edges))
-
-        for idx in idx_ls1:
-            path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
-                    '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
-            path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
-                    '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-
-            query = train_edges[idx]
-            # print(query, idx)
-
-            if isinstance(rel_idx, int) and (query[1] != rel_idx):
-                continue
-
-            if (pos_examples_idx is not None) and (idx not in pos_examples_idx):
-                continue
-
-            # mask ori query and inv query in the train set
-            masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
-            masked_facts = masked_facts[masked_facts[:,3]<=query[3]] if self.overall_mode == 'time_shifting' else masked_facts
-            
-            if mode == 'path_search':
-                rule_dict = self.path_search(masked_facts, query, time_shift_mode)
-            else:
-                rule_dict = self.alpha_calculation(path1, masked_facts, query, time_shift_mode)
-            
-            with open(path1, 'w') as f:
-                json.dump(rule_dict, f)
-
-            if self.f_Wc_ts:
-                self.calculate_ts_dist(path2, masked_facts, query, time_shift_mode)
-
-        return 
-
-
-
-    def apply_in_batch(self, i, num_queries, num_processes, rel_idx, mode, train_edges, path_name='', 
-                            pos_examples_idx=None, time_shift_mode=0):
-        queries_idx = self.create_training_idx_in_batch(i, num_queries, num_processes, rel_idx, train_edges)
-        self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode, mode=mode)
-
-        return 
-
-
-
-
-
-    # def explore(self, j, train_edges):
-    #     line = train_edges[j,:]
-    #     masked_facts = np.delete(train_edges, [j, self.get_inv_idx(int(len(train_edges)/2), j)], 0)
-
-    #     edges_simp = masked_facts[:,[0,2]]
-    #     edges_simp = np.unique(edges_simp, axis=0)
-    #     edges_simp = edges_simp.astype(int)
-    #     pos = list(edges_simp)
-    #     rows, cols = zip(*pos)
-
-    #     adj_mat = np.zeros((self.num_entites, self.num_entites))
-    #     adj_mat[rows, cols] = 1
-
-    #     cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
-
-    #     ent_walk_res = {}
-    #     # print(line)
-    #     if len(cur_num_hops1) > 0:
-    #         cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
-
-    #         for num in cur_num_hops1:
-    #             path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-
-
-    #             walk_edges = []
-    #             for i in range(num):
-    #                 related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])
-    #                                                       & (masked_facts[:,3]<=line[3])]
-    #                 f_x = 0
-    #                 if len(related_facts) == 0:
-    #                     related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-    #                     f_x = 1
-    #                 z = np.unique(related_facts[:,:3], axis=0)
-    #                 y = []
-    #                 for edge in z:
-    #                     x = np.all(related_facts[:,:3] == edge, axis=1)
-    #                     if f_x == 0:
-    #                         t_s = max(related_facts[x][:,3])
-    #                         t_e = max(related_facts[x & (related_facts[:,3] == t_s)][:,4])
-    #                     else:
-    #                         t_s = min(related_facts[x][:,3])
-    #                         t_e = min(related_facts[x & (related_facts[:,3] == t_s)][:,4])
-    #                     y.append([edge[0], edge[1], t_s, t_e, edge[2]])
-
-                    
-    #                 related_facts = np.array(y)
-    #                 walk_edges.append(related_facts)
-
-    #             cur_ent_walk_res = self.get_walks(walk_edges, ["entity_", "rel_", "ts_", "te_"]).to_numpy()
-
-    #             cur_ent_walk_res = self.check_path_rep_v2(cur_ent_walk_res, num)
-
-    #             if len(cur_ent_walk_res)>0:
-    #                 x = []
-    #                 for i1 in range(num):
-    #                     x.append(cur_ent_walk_res[:, 4*i1+1].reshape((-1,1)))
-
-    #                 for i1 in range(num):
-    #                     x.append(self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i1+2: 4*i1+4], line[3:]).reshape((-1,1)))
-
-    #                 for i1 in range(1, num):
-    #                     for i2 in range(i1):
-    #                         x.append(self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i1+2: 4*i1+4], cur_ent_walk_res[:, 4*i2+2: 4*i2+4]).reshape((-1,1)))
-
-    #                 x = np.hstack(x)
-    #                 ent_walk_res[num] = np.unique(x, axis=0).tolist()
-
-    #     return 
-
-
-
-    # def explore_in_batch(self, i, num_queries, num_processes, train_edges):
-    #     x = len(train_edges)//2
-    #     num_rest_queries = x - (i + 1) * num_queries
-    #     if (num_rest_queries >= num_queries) and (i + 1 < num_processes):
-    #         queries_idx = range(i * num_queries, (i + 1) * num_queries)
-    #     else:
-    #         queries_idx = range(i * num_queries, x)
-
-    #     for idx in queries_idx:
-    #         self.explore(idx, train_edges)
-
-    #     return 
-
-
-
-    # def explore_queries_v2(self, j, train_edges, test_data, test_data_using=None):
-    #     if not isinstance(test_data_using, np.ndarray):
-    #         test_data_using = test_data
-
-    #     line = test_data_using[j,:]
-    #     # print(line)
-
-    #     edges_simp = train_edges[:,[0,2]]
-    #     edges_simp = np.unique(edges_simp, axis=0)
-    #     edges_simp = edges_simp.astype(int)
-    #     pos = list(edges_simp)
-    #     rows, cols = zip(*pos)
-
-    #     adj_mat = np.zeros((self.num_entites, self.num_entites))
-    #     adj_mat[rows, cols] = 1
-
-    #     x = self.obtain_tmp_rel(train_edges[:, 3:], line[3:]).reshape((-1,1))
-    #     x = np.hstack((train_edges[:, :3], x))
-    #     x = np.unique(x, axis=0)
-    #     x = x.astype(int)
-
-    #     cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(line[0], adj_mat, self.num_entites, line[2], self.max_explore_len)
-
-    #     ent_walk_res = {}
-    #     if len(cur_num_hops1) > 0:
-    #         cur_num_hops2, new_nodes_ls2 = self.BFS_mat_ver2(line[2], adj_mat, self.num_entites, line[0], self.max_explore_len)
-    #         for num in cur_num_hops1:
-    #             path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
-    #             walk_edges = []
-    #             for i in range(num):
-    #                 related_facts = x[np.isin(x[:,0], path_ls[i]) & np.isin(x[:,2], path_ls[i+1])]
-    #                 walk_edges.append(related_facts[:,[0,1,3,2]])
-    #             cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "tmpRel_"]).to_numpy()
-    #             # print(cur_ent_walk_res)
-    #             if len(cur_ent_walk_res)>0:
-    #                 y = cur_ent_walk_res[:, [3*i+1 for i in range(num)] + [3*i+2 for i in range(num)]]
-    #                 y = np.unique(y, axis=0)
-    #                 # print(y)
-    #                 ent_walk_res[num] = y.tolist()
-
-    #     return ent_walk_res
-
-
-    def create_rule_score_bar(self, rule_dict1):
-        rule_score_bar = {}
-        for rule_Len in rule_dict1.keys():
-            r_score_ls = []
-            for r in rule_dict1[rule_Len]:
-                r_score_ls.append(r['score'])
-            r_score_ls.sort(reverse=True)
-            rule_score_bar[rule_Len] = r_score_ls[min(len(r_score_ls)-1, self.max_rulenum[int(rule_Len)])]
-
-        return rule_score_bar
-
-
-    def create_res_ts_dict(self, query, rule, rule_Len, cur_walk, res_ts_dict):
-        for w in cur_walk:
-            if w[-1] not in res_ts_dict:
-                res_ts_dict[w[-1]] = {}
-            for l in range(int(rule_Len)):
-                if rule['rule'][l] not in res_ts_dict[w[-1]]:
-                    res_ts_dict[w[-1]][rule['rule'][l]] = []
-                res_ts_dict[w[-1]][rule['rule'][l]].append(w[3*l+1]-query[3])
-        return res_ts_dict
-
-
-    def predict(self, rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges,
-                    queries_idx = None, tol_gap=[0, 0], selected_rules=None, enable_pure_guessing=True,
-                    format_extra_len=0, f_predicting=0):
-
-        f_name = 'learned_rules' if self.overall_mode == 'general' else 'learned_rules_' + self.overall_mode
-        path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
-
-        if not os.path.exists(path):
-            # print(path + ' not found')
-            rule_dict1 = {}
-            if not enable_pure_guessing:
-                return {}
-        else:
-            with open(path, 'r') as f:
-                rule_dict1 = json.load(f)
-
-        data_using = test_data if rel_idx < self.num_rel//2 else test_data_inv
-        s = 0 if rel_idx < self.num_rel//2  else len(test_data)
-        rule_score_bar = self.create_rule_score_bar(rule_dict1)
-        mode = 1 if self.f_Wc_ts or self.f_non_Markovian else 0
-        queries_idx = range(len(data_using)) if queries_idx is None else queries_idx
-
-        rank_dict = {}
-        for idx in queries_idx:
-            if data_using[idx][1] != rel_idx:
-                continue
-            
-            query = data_using[idx]
-            cur_bg_pred = bg_pred[bg_pred[:, 3]<query[3]] if f_predicting else bg_pred
-    
-            res_dict, res_ts_dict = {}, {}
-            x = self.create_mapping_facts(cur_bg_pred, query[3:], mode)
-            for rule_Len in rule_dict1.keys():
-                for r in rule_dict1[rule_Len]:
-                    if isinstance(selected_rules, dict) and (not r['rule'] in selected_rules[rel_idx]):
-                        continue
-                    if r['score'] < rule_score_bar[rule_Len]:
-                        continue
-
-                    cur_dict, cur_walk = self.apply_single_rule(query[0], r['rule'], int(rule_Len), x, f_print=0, return_walk=True)
-
-                    if self.f_Wc_ts:
-                        res_ts_dict = self.create_res_ts_dict(query, r, rule_Len, cur_walk, res_ts_dict)
-
-                    for k in cur_dict.keys():
-                        cur_dict[k] = cur_dict[k] * r['score']
-
-                    res_dict = self.my_merge_dict(res_dict, cur_dict)
-
-            if enable_pure_guessing and (len(res_dict) == 0):
-                for i in range(self.num_entites):
-                    res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
-
-            res_tfm_score = self.predict_tfm_score_with_fact_check(query, bg_pred, train_edges, res_dict, dist_pars, assiting_data, format_extra_len)
-
-            rank = self.evaluate_res_dict(res_dict, query[2], query, train_edges, res_tfm_score, tol_gap)
-            rank_dict[idx+s] = rank
-
-        return rank_dict
-
-
-
-
-    def predict_in_batch(self, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv, 
-                            const_pattern_ls, assiting_data, dist_pars, train_edges, rules_dict=None, 
-                            rule_scores=None, tol_gap=[0, 0], selected_rules=None,
-                            format_extra_len=0, f_predicting=0, enable_pure_guessing = True):
-        n_t = len(test_data)
-        num_rest_queries = n_t - (i + 1) * num_queries
-        if (num_rest_queries >= num_queries) and (i + 1 < num_processes):
-            queries_idx = range(i * num_queries, (i + 1) * num_queries)
-        else:
-            queries_idx = range(i * num_queries, n_t)
-
-        rank_dict = self.predict(rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, 
-                                    assiting_data, dist_pars, train_edges,
-                                    queries_idx, tol_gap, selected_rules, enable_pure_guessing,
-                                    format_extra_len, f_predicting)
-
-        return rank_dict
-
-
-    def predict_tfm_score(self, train_edges, query_rel, query_time, candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
-        with open('../output/train_weights_tfm/train_weights_' + self.dataset_using + '_tfm.json', 'r') as f:
-            my_res = json.load(f)
-
-        W_order_ls = np.array(my_res['W_order_ls'])
-        W_pair_ls = np.array(my_res['W_pair_ls'])
-        gamma_tfm = my_res['gamma_tfm']
-
-        related_rel_dict, h_rec, h_order, h_pair = self.prepare_inputs_tfm_test(train_edges, query_rel, query_time, 
-                                                            candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
-
-        x1 = h_rec
-        x2 = 0
-        x3 = 0
-        if len(related_rel_dict)>0:
-            x2 = np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0])*h_order)/np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0]))
-            x3 = np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0])*h_pair)/np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0]))
-
-        return x1*gamma_tfm[0][0] + x2*gamma_tfm[0][1] + x3*gamma_tfm[0][2]
-
-
-
-    def predict_tfm_Wc_score(self, query_rel, ts_dict, p_order, mu_pair, sigma_pair, lambda_pair):
-        with open('../output/train_weights_tfm/train_weights_' + self.dataset_using + '_tfm_Wc.json', 'r') as f:
-            my_res = json.load(f)
-
-        W_order_ls = np.array(my_res['W_order_ls'])
-        W_pair_ls = np.array(my_res['W_pair_ls'])
-        gamma_tfm = my_res['gamma_tfm_Wc']
-
-        related_rel_dict, h_order, h_pair = self.prepare_inputs_tfm_Wc_test(query_rel, ts_dict,
-                                                                         p_order, mu_pair, sigma_pair, lambda_pair)
-
-        x2 = 0
-        x3 = 0
-        if len(related_rel_dict)>0:
-            x2 = np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0])*h_order)/np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0]))
-            x3 = np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0])*h_pair)/np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0]))
-
-        return x2*gamma_tfm[0][0] + x3*gamma_tfm[0][1]
-
-
-
-    def predict_tfm_score_with_fact_check(self, query, bg_pred, facts, res_dict, dist_pars, assiting_data, format_extra_len=0):
-        f_check_enable = [0, 0.5, 1][0] # whether enable
-        res_mat = np.zeros((self.num_entites,1))
-
-        if len(dist_pars) > 0:
-            if self.f_Wc_ts:
-                p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
-                                    p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
-            else:
-                p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
-
-            if query[1]>= self.num_rel//2:
-                cur_query_rel = query[1] - self.num_rel//2
-            else:
-                cur_query_rel = query[1] + self.num_rel//2
-
-            TRL_total_score = sum(res_dict.values())
-            for cand in res_dict:
-                res_mat[cand, 0] += 0.1* TRL_total_score *self.predict_tfm_score(bg_pred, 
-                                                            cur_query_rel, query[3], cand, 
-                                                            p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
-                if self.f_Wc_ts:
-                    res_mat[cand, 0] += 0.05* TRL_total_score *self.predict_tfm_Wc_score(query[1], res_dict[cand], 
-                                                        p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc)
-        
-        res_mat = self.fact_check(f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=format_extra_len)
-        return res_mat
-
-
-
-    def fact_check(self, f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=0):
-        assert self.dataset_using in ['wiki', 'YAGO']
-        
-        if self.dataset_using == 'wiki':
-            ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
-        else:
-            ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
-
-        if f_check_enable > 0:
-            if f_check_enable == 1:
-                res_mat_exp = res_mat - 1
-                if self.dataset_using == 'wiki':
-                    res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                    if not query[1] in [17, 20]:
-                        res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1                        
-                else:                        
-                    if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
-                        res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                    res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
-                res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
-
-            if self.dataset_using == 'wiki':
-                if query[1] in Gauss_int_dict.keys():
-                    x = query[3] - ent_int_mat[:, 0]
-                    y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                    res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
-            else:
-                rel_once = [10, 17]
-                if query[1] in rel_once:
-                    res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
-
-                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                    res_mat[ent_prop_mat[:,0] == -1] -= 1
-                elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
-                    res_mat[ent_prop_mat[:,0] == 1] -= 1
-
-                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                    y = facts[facts[:, 1]==query[1], 3:]
-                    z = facts[facts[:, 1]==query[1], 2:3]
-                    y = self.obtain_tmp_rel(y, query[3:]).reshape((-1,1))
-                    res_mat[z[y==0]] -= 0.1
-
-                if f_check_enable == 1:
-                    if query[1] in Gauss_int_dict.keys():
-                        if query[1] != 17:
-                            x = query[3] - ent_int_mat[:, 0]
-                            y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                        else:
-                            x = query[3] - ent_int_mat[:, 1]
-                            y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
-                        res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
-
-        return res_mat
-
-
-
-    # def apply_specific_rules_v2(self, rule_walks, sp_rules):
-    #     res_dict = {}
-    #     for sp_r in sp_rules:
-    #         x = rule_walks[np.all(rule_walks[:,:-1] == sp_r['rule'], axis=1), -1:]
-    #         df = pd.DataFrame(x, columns=["end_node"], dtype=int)
-    #         cur_dict = df["end_node"].value_counts(normalize=True).to_dict()
-    #         for k in cur_dict.keys():
-    #             cur_dict[k] = cur_dict[k] * sp_r['score']
-    #         res_dict = self.my_merge_dict(res_dict, cur_dict)
-
-    #     return res_dict
-
-
-
     def _random_uniform_unit(self, r, c):
         bound = 6./ np.sqrt(c)
         init_matrix = np.random.uniform(-bound, bound, (r, c))
@@ -1196,51 +1024,6 @@ class TILP(object):
 
 
 
-
-    def BFS_mat_ver2(self, st_node, adj_mat, num_nodes, targ_node, max_len):
-        node_st = np.zeros((num_nodes, 1))
-        node_st[int(st_node)] = 1
-        res = node_st.copy()
-
-
-        new_nodes_ls =[[int(st_node)]]
-        num_hops = []
-        for i in range(max_len):
-            res = np.dot(adj_mat, res)
-            res[res>1] = 1
-
-            idx_ls = np.where(res==1)[0]
-
-            # cur_new_idx_ls = list(set(idx_ls)-set(idx_ls_old))
-            cur_new_idx_ls = idx_ls.copy()
-            if len(cur_new_idx_ls) > 0:
-                new_nodes_ls.append(cur_new_idx_ls)
-
-            if res[int(targ_node)] == 1:
-                num_hops.append(i+1)
-                # res[targ_node] = 0
-
-        return num_hops, new_nodes_ls
-
-
-    def count_lists(self, input_list):
-        # Convert each sublist to a tuple so they can be counted
-        tuples_list = [tuple(sublist) for sublist in input_list]
-
-        # Count the occurrences of each tuple
-        tuples_count = Counter(tuples_list)
-
-        # Filter tuples that occur more than once and convert them back into lists, pairing with their counts
-        output = [(item, count) for item, count in tuples_count.items()]
-
-        sorted_list = sorted(output, key=lambda x: x[1], reverse=True)
-        # Extracting the first element of each tuple for the output
-        output = [item[0] for item in sorted_list]
-
-        return output
-
-
-
     def calculate_query_score(self, edges, ent_walk_res, query_int, var_prob_rel_ls, var_prob_pattern_ls):
         path_len = ent_walk_res.shape[1]-1
         prob_path_ls = []
@@ -1259,7 +1042,6 @@ class TILP(object):
         prob_query = tf.reduce_sum(tf.nn.softmax(prob_path) * prob_path, 0)
 
         return prob_query
-
 
 
     def calculate_query_score_fun_ver2(self, rel_dict, tmp_rel_dict, rPro_dict, var_prob_rel_ls, var_prob_pattern_ls, var_prob_ruleLen):
@@ -1312,7 +1094,6 @@ class TILP(object):
             score += cur_score
 
         return score
-
 
 
     def calculate_tfm_score_v2(self, query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, f_exist, mask,
@@ -1381,6 +1162,68 @@ class TILP(object):
         return tfm_score
 
 
+    def variable_init_v3(self):
+        prob_rel_ls = []
+        prob_pattern_ls = []
+        prob_ruleLen = tf.nn.softmax(tf.Variable(np.random.rand(1, self.num_ruleLen), dtype=tf.float32), axis=1)
+
+        for i in range(1, self.num_ruleLen+1):
+            prob_rel = tf.nn.softmax(tf.Variable(np.random.rand(self.num_rel, i), dtype=tf.float32), axis=0)
+            prob_rel = tf.split(prob_rel, i, axis=1)
+            prob_rel_ls.append(prob_rel)
+
+            prob_pattern = tf.nn.softmax(tf.Variable(np.random.rand(self.num_pattern, i), dtype=tf.float32), axis=0)
+            prob_pattern = tf.split(prob_pattern, i, axis=1)
+            prob_pattern_ls.append(prob_pattern)
+
+        return prob_rel_ls, prob_pattern_ls, prob_ruleLen
+
+
+    def variable_init_tfm(self):
+        var_W_rec = tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32)
+        var_b_rec = tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32)
+
+        var_W_order_ls = []
+        var_b_order_ls = []
+        var_W_pair_ls = []
+        var_b_pair_ls = []
+
+        for i in range(self.num_rel):
+            var_W_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_b_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_W_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_b_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+
+        gamma_tfm = tf.nn.softmax(tf.Variable(np.random.rand(1,3), dtype=tf.float32), axis=1)
+
+        return var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm
+
+
+    def variable_init_tfm_Wc(self):
+        var_W_order_ls = []
+        var_b_order_ls = []
+        var_W_pair_ls = []
+        var_b_pair_ls = []
+
+        for i in range(self.num_rel):
+            var_W_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_b_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_W_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+            var_b_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
+
+        gamma_tfm = tf.nn.softmax(tf.Variable(np.random.rand(1,2), dtype=tf.float32), axis=1)
+
+        return var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm
+
+
+
+
+
+
+class Collector(gadgets):
+    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
+        super(Collector, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+    
     def calculate_rule_score(self, rule, ruleLen, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen):
         rel_dict = rule[:ruleLen]
         tmp_rel_dict = rule[ruleLen:]
@@ -1402,42 +1245,6 @@ class TILP(object):
         prob = prob_rel * prob_pattern * var_prob_ruleLen[0, ruleLen-1]
 
         return prob
-
-
-
-    # def check_path_rep_v3(self, ent_walk_res, path_len, rel_ls):
-    #     # print(ent_walk_res)
-    #     for i in range(path_len-1):
-    #         for j in range(i+1, path_len):
-    #             if self.get_inv_idx(num_rel//2, rel_ls[i]) == rel_ls[j]:
-    #                 ent_walk_res = ent_walk_res[np.invert(
-    #                                                     (ent_walk_res[:,3*i] == ent_walk_res[:,3*j+3])\
-    #                                                     & (ent_walk_res[:,3*i+3] == ent_walk_res[:,3*j])\
-    #                                                     & np.all(ent_walk_res[:,3*i+1:3*i+3] == ent_walk_res[:,3*j+1:3*j+3], axis=1)
-    #                                                         )]
-    #             if rel_ls[i] == rel_ls[j]:
-    #                 ent_walk_res = ent_walk_res[np.invert(np.all(ent_walk_res[:,3*i:3*i+4] == ent_walk_res[:,3*j:3*j+4], axis=1))]
-
-    #     x = []
-    #     for i in range(path_len):
-    #         x += [3*i+1, 3*i+2]
-    #     x += [-1]
-
-    #     ent_walk_res = ent_walk_res[:, x]
-    #     # print(ent_walk_res)
-    #     return ent_walk_res
-
-
-    def create_mapping_facts(self, facts, query_int, mode=0):
-        x = self.obtain_tmp_rel(facts[:, 3:], query_int).reshape((-1,1))
-        if mode:
-            x = np.hstack((facts[:, :3], x, facts[:, 3:]))
-        else:
-            x = np.hstack((facts[:, :3], x))
-            x = np.unique(x, axis=0)
-            x = x.astype(int)
-        return x
-
 
     def read_weight(self, rel_idx):
         # calculate rule weights
@@ -1539,6 +1346,33 @@ class TILP(object):
         return rule_dict, rule_sup_num_dict
 
 
+    # def make_specific_rules(self, rule_walks, mode):
+    #     dur_list = [(0,6), (6,11), (11,21), (21,10000)]
+    #     if 'dur' in mode:
+    #         mode_t = []
+    #         for i in range(rule_walks.shape[1]//2):
+    #             dur = rule_walks[:,2*i+1] - rule_walks[:,2*i]
+    #             res = dur.copy()
+    #             # print(res)
+    #             for j in range(len(dur_list)):
+    #                 res[(dur>=dur_list[j][0]) & (dur<dur_list[j][1])] = j
+    #             # print(res)
+    #             mode_t.append(res.reshape(-1,1))
+    #         if len(mode_t) == 1:
+    #             mode_t = mode_t[0].tolist()
+    #         else:
+    #             mode_t = np.hstack(mode_t).tolist()
+
+    #         # print(mode_t)
+    #         c = Counter([str(t) for t in mode_t])
+    #         c = dict(c)
+    #         s = sum(c.values())
+    #         for k in c.keys():
+    #             c[k] = c[k]/s
+    #         # print(c)
+    #     return c
+
+
 
     # def create_rule_supplement(self, rel_idx, train_edges, query_idx=None):
     #     with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
@@ -1582,20 +1416,251 @@ class TILP(object):
     #     return rule_sup
 
 
-    def create_training_idx_in_batch(self, i, num_queries, num_processes, rel_idx, train_edges):
-        if rel_idx < self.num_rel//2:
-            s = 0
-        else:
-            s = len(train_edges)//2
 
-        n_t = len(train_edges)//2
+
+
+class Predictor(Walker):
+    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
+        super(Predictor, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+
+    def create_rule_score_bar(self, rule_dict1):
+        rule_score_bar = {}
+        for rule_Len in rule_dict1.keys():
+            r_score_ls = []
+            for r in rule_dict1[rule_Len]:
+                r_score_ls.append(r['score'])
+            r_score_ls.sort(reverse=True)
+            rule_score_bar[rule_Len] = r_score_ls[min(len(r_score_ls)-1, self.max_rulenum[int(rule_Len)])]
+
+        return rule_score_bar
+
+
+    def create_res_ts_dict(self, query, rule, rule_Len, cur_walk, res_ts_dict):
+        for w in cur_walk:
+            if w[-1] not in res_ts_dict:
+                res_ts_dict[w[-1]] = {}
+            for l in range(int(rule_Len)):
+                if rule['rule'][l] not in res_ts_dict[w[-1]]:
+                    res_ts_dict[w[-1]][rule['rule'][l]] = []
+                res_ts_dict[w[-1]][rule['rule'][l]].append(w[3*l+1]-query[3])
+        return res_ts_dict
+
+
+    def predict(self, rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges,
+                    queries_idx = None, tol_gap=[0, 0], selected_rules=None, enable_pure_guessing=True,
+                    format_extra_len=0, f_predicting=0):
+
+        f_name = 'learned_rules' if self.overall_mode == 'general' else 'learned_rules_' + self.overall_mode
+        path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
+
+        if not os.path.exists(path):
+            # print(path + ' not found')
+            rule_dict1 = {}
+            if not enable_pure_guessing:
+                return {}
+        else:
+            with open(path, 'r') as f:
+                rule_dict1 = json.load(f)
+
+        data_using = test_data if rel_idx < self.num_rel//2 else test_data_inv
+        s = 0 if rel_idx < self.num_rel//2  else len(test_data)
+        rule_score_bar = self.create_rule_score_bar(rule_dict1)
+        mode = 1 if self.f_Wc_ts or self.f_non_Markovian else 0
+        queries_idx = range(len(data_using)) if queries_idx is None else queries_idx
+
+        rank_dict = {}
+        for idx in queries_idx:
+            if data_using[idx][1] != rel_idx:
+                continue
+            
+            query = data_using[idx]
+            cur_bg_pred = bg_pred[bg_pred[:, 3]<query[3]] if f_predicting else bg_pred
+    
+            res_dict, res_ts_dict = {}, {}
+            x = self.create_mapping_facts(cur_bg_pred, query[3:], mode)
+            for rule_Len in rule_dict1.keys():
+                for r in rule_dict1[rule_Len]:
+                    if isinstance(selected_rules, dict) and (not r['rule'] in selected_rules[rel_idx]):
+                        continue
+                    if r['score'] < rule_score_bar[rule_Len]:
+                        continue
+
+                    cur_dict, cur_walk = self.apply_single_rule(query[0], r['rule'], int(rule_Len), x, f_print=0, return_walk=True)
+
+                    if self.f_Wc_ts:
+                        res_ts_dict = self.create_res_ts_dict(query, r, rule_Len, cur_walk, res_ts_dict)
+
+                    for k in cur_dict.keys():
+                        cur_dict[k] = cur_dict[k] * r['score']
+
+                    res_dict = self.my_merge_dict(res_dict, cur_dict)
+
+            if enable_pure_guessing and (len(res_dict) == 0):
+                for i in range(self.num_entites):
+                    res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
+
+            res_tfm_score = self.predict_tfm_score_with_fact_check(query, bg_pred, train_edges, res_dict, dist_pars, assiting_data, format_extra_len)
+
+            rank = self.evaluate_res_dict(res_dict, query[2], query, train_edges, res_tfm_score, tol_gap)
+            rank_dict[idx+s] = rank
+
+        return rank_dict
+
+
+    def predict_in_batch(self, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv, 
+                            const_pattern_ls, assiting_data, dist_pars, train_edges, rules_dict=None, 
+                            rule_scores=None, tol_gap=[0, 0], selected_rules=None,
+                            format_extra_len=0, f_predicting=0, enable_pure_guessing = True):
+        n_t = len(test_data)
         num_rest_queries = n_t - (i + 1) * num_queries
         if (num_rest_queries >= num_queries) and (i + 1 < num_processes):
-            queries_idx = range(s+i*num_queries, s+(i+1)*num_queries)
+            queries_idx = range(i * num_queries, (i + 1) * num_queries)
         else:
-            queries_idx = range(s+i*num_queries, s+n_t)
+            queries_idx = range(i * num_queries, n_t)
 
-        return queries_idx
+        rank_dict = self.predict(rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, 
+                                    assiting_data, dist_pars, train_edges,
+                                    queries_idx, tol_gap, selected_rules, enable_pure_guessing,
+                                    format_extra_len, f_predicting)
+
+        return rank_dict
+
+
+    def predict_tfm_score(self, train_edges, query_rel, query_time, candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
+        with open('../output/train_weights_tfm/train_weights_' + self.dataset_using + '_tfm.json', 'r') as f:
+            my_res = json.load(f)
+
+        W_order_ls = np.array(my_res['W_order_ls'])
+        W_pair_ls = np.array(my_res['W_pair_ls'])
+        gamma_tfm = my_res['gamma_tfm']
+
+        related_rel_dict, h_rec, h_order, h_pair = self.prepare_inputs_tfm_test(train_edges, query_rel, query_time, 
+                                                            candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
+
+        x1 = h_rec
+        x2 = 0
+        x3 = 0
+        if len(related_rel_dict)>0:
+            x2 = np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0])*h_order)/np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0]))
+            x3 = np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0])*h_pair)/np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0]))
+
+        return x1*gamma_tfm[0][0] + x2*gamma_tfm[0][1] + x3*gamma_tfm[0][2]
+
+
+
+    def predict_tfm_Wc_score(self, query_rel, ts_dict, p_order, mu_pair, sigma_pair, lambda_pair):
+        with open('../output/train_weights_tfm/train_weights_' + self.dataset_using + '_tfm_Wc.json', 'r') as f:
+            my_res = json.load(f)
+
+        W_order_ls = np.array(my_res['W_order_ls'])
+        W_pair_ls = np.array(my_res['W_pair_ls'])
+        gamma_tfm = my_res['gamma_tfm_Wc']
+
+        related_rel_dict, h_order, h_pair = self.prepare_inputs_tfm_Wc_test(query_rel, ts_dict,
+                                                                         p_order, mu_pair, sigma_pair, lambda_pair)
+
+        x2 = 0
+        x3 = 0
+        if len(related_rel_dict)>0:
+            x2 = np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0])*h_order)/np.sum(np.exp(W_order_ls[query_rel, related_rel_dict][0]))
+            x3 = np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0])*h_pair)/np.sum(np.exp(W_pair_ls[query_rel, related_rel_dict][0]))
+
+        return x2*gamma_tfm[0][0] + x3*gamma_tfm[0][1]
+
+
+    def predict_tfm_score_with_fact_check(self, query, bg_pred, facts, res_dict, dist_pars, assiting_data, format_extra_len=0):
+        f_check_enable = [0, 0.5, 1][0] # whether enable
+        res_mat = np.zeros((self.num_entites,1))
+
+        if len(dist_pars) > 0:
+            if self.f_Wc_ts:
+                p_rec, p_order, mu_pair, sigma_pair, lambda_pair, \
+                                    p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc = dist_pars
+            else:
+                p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+
+            if query[1]>= self.num_rel//2:
+                cur_query_rel = query[1] - self.num_rel//2
+            else:
+                cur_query_rel = query[1] + self.num_rel//2
+
+            TRL_total_score = sum(res_dict.values())
+            for cand in res_dict:
+                res_mat[cand, 0] += 0.1* TRL_total_score *self.predict_tfm_score(bg_pred, 
+                                                            cur_query_rel, query[3], cand, 
+                                                            p_rec, p_order, mu_pair, sigma_pair, lambda_pair)
+                if self.f_Wc_ts:
+                    res_mat[cand, 0] += 0.05* TRL_total_score *self.predict_tfm_Wc_score(query[1], res_dict[cand], 
+                                                        p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc)
+        
+        res_mat = self.fact_check(f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=format_extra_len)
+        return res_mat
+
+
+
+    def fact_check(self, f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=0):
+        assert self.dataset_using in ['wiki', 'YAGO']
+        
+        if self.dataset_using == 'wiki':
+            ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
+        else:
+            ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
+
+        if f_check_enable > 0:
+            if f_check_enable == 1:
+                res_mat_exp = res_mat - 1
+                if self.dataset_using == 'wiki':
+                    res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                    if not query[1] in [17, 20]:
+                        res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1                        
+                else:                        
+                    if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
+                        res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                    res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
+                res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
+
+            if self.dataset_using == 'wiki':
+                if query[1] in Gauss_int_dict.keys():
+                    x = query[3] - ent_int_mat[:, 0]
+                    y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                    res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+            else:
+                rel_once = [10, 17]
+                if query[1] in rel_once:
+                    res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
+
+                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                    res_mat[ent_prop_mat[:,0] == -1] -= 1
+                elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
+                    res_mat[ent_prop_mat[:,0] == 1] -= 1
+
+                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                    y = facts[facts[:, 1]==query[1], 3:]
+                    z = facts[facts[:, 1]==query[1], 2:3]
+                    y = self.obtain_tmp_rel(y, query[3:]).reshape((-1,1))
+                    res_mat[z[y==0]] -= 0.1
+
+                if f_check_enable == 1:
+                    if query[1] in Gauss_int_dict.keys():
+                        if query[1] != 17:
+                            x = query[3] - ent_int_mat[:, 0]
+                            y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                        else:
+                            x = query[3] - ent_int_mat[:, 1]
+                            y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
+                        res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+
+        return res_mat
+    
+    def create_mapping_facts(self, facts, query_int, mode=0):
+        x = self.obtain_tmp_rel(facts[:, 3:], query_int).reshape((-1,1))
+        if mode:
+            x = np.hstack((facts[:, :3], x, facts[:, 3:]))
+        else:
+            x = np.hstack((facts[:, :3], x))
+            x = np.unique(x, axis=0)
+            x = x.astype(int)
+        return x
 
 
     def evaluate_res_dict(self, res_dict, targ_node, query, facts, res_tfm_score, tol_gap=[0,0]):
@@ -1616,792 +1681,3 @@ class TILP(object):
         rank = len(res_mat[res_mat[:,0]>s])+1
 
         return rank
-
-
-    def find_common_nodes(self, ls1, ls2):
-        return [list(set(ls1[i]).intersection(set(ls2[i]))) for i in range(len(ls1))]
-
-
-    # def generate_input_dict_v2(self, rel_idx, ruleLen, train_edges):
-    #     num_paths_max, num_path_sampling = 20, 5
-    #     cur_num_paths = min(num_paths_max, self.num_paths_dict[rel_idx][ruleLen])
-
-    #     input_dict_ls = []
-    #     for (i, query) in enumerate(train_edges):
-    #         if query[1] == rel_idx:
-    #             cur_idx_inv = self.get_inv_idx(int(len(train_edges)/2), i)
-
-    #             cur_file_path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(i)+'.json'
-    #             cur_file_path_inv = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(cur_idx_inv)+'.json'
-
-    #             if os.path.exists(cur_file_path) or os.path.exists(cur_file_path_inv):
-    #                 if os.path.exists(cur_file_path):
-    #                     with open(cur_file_path) as f:
-    #                         ent_walk_res = np.array(json.load(f))
-    #                 else:
-    #                     with open(cur_file_path_inv) as f:
-    #                         ent_walk_res = np.array(json.load(f))[:,::-1]
-
-    #                 if ent_walk_res.shape[1] -1 == ruleLen:
-    #                     print(ent_walk_res)
-    #                     masked_facts = np.delete(train_edges, [i, cur_idx_inv], 0)
-    #                     query_int = query[3:]
-
-    #                     ent_walk_res_ls = []
-    #                     if ent_walk_res.shape[0]>cur_num_paths:
-    #                         for m in range(num_path_sampling):
-    #                             np.random.shuffle(ent_walk_res)
-    #                             ent_walk_res_ls.append(ent_walk_res[:cur_num_paths,:])
-    #                     else:
-    #                         ent_walk_res_ls.append(ent_walk_res)
-
-    #                     cur_input_dicts = []
-    #                     for cur_walk_mat in ent_walk_res_ls:
-    #                         cur_input_dict = {'rel_dict': {}, 'tmp_rel_dict': {}}
-    #                         cur_mask = []
-    #                         for l in range(cur_num_paths):
-    #                             cur_input_dict['rel_dict'][l] = {}
-    #                             cur_input_dict['tmp_rel_dict'][l] = {}
-
-    #                             if l<cur_walk_mat.shape[0]:
-    #                                 cur_mask.append(0)
-    #                                 for k in range(ruleLen):
-    #                                     rel, tmp_rel = self.obtain_edges_given_nodes(masked_facts, cur_walk_mat[l,k], cur_walk_mat[l,k+1], query_int)
-    #                                     cur_input_dict['rel_dict'][l][k] = rel
-    #                                     cur_input_dict['tmp_rel_dict'][l][k] = tmp_rel
-    #                             else:
-    #                                 cur_mask.append(-1000)
-    #                                 for k in range(ruleLen):
-    #                                     cur_input_dict['rel_dict'][l][k] = [0]
-    #                                     cur_input_dict['tmp_rel_dict'][l][k] = [0]
-    #                         cur_input_dict['mask'] = cur_mask
-    #                         cur_input_dicts.append(cur_input_dict)
-
-    #                     input_dict_ls.append(cur_input_dicts)
-
-    #                     if len(input_dict_ls)>self.num_train_samples_max:
-    #                         break
-
-    #     return input_dict_ls
-
-
-    def get_inv_idx(self, num_dataset, idx):
-        if isinstance(idx, int):
-            return idx - num_dataset if idx >= num_dataset else idx + num_dataset
-        else:
-            x = idx.copy()
-            x[idx >= num_dataset] = x[idx >= num_dataset] - num_dataset
-            x[idx < num_dataset] = x[idx < num_dataset] + num_dataset
-            return x
-
-    def get_inv_rel(self, rel_idx):
-        if rel_idx < self.num_rel//2:
-            return rel_idx + self.num_rel//2
-        else:
-            return rel_idx - self.num_rel//2
-
-    def get_inv_rule(self, rule, ruleLen):
-        x = rule[:ruleLen][::-1]
-        return [self.get_inv_rel(u) for u in x] + rule[ruleLen:]
-
-
-    # Function to remove rows where the last five columns are the same as any preceding five columns
-    def remove_matching_rows(self, df):
-        n = df.shape[1]  # Number of columns
-        last_five_cols = df.iloc[:, -5:]
-        
-        condition_to_remove = pd.Series([False] * len(df))
-        
-        # Iterate over each group of five columns, excluding the last five
-        for i in range(0, n - 5, 4):
-            comparison_cols = df.iloc[:, i:i + 5]
-            condition_to_remove |= (last_five_cols.values == comparison_cols.values).all(axis=1)
-        
-        # Filter out the rows
-        df_filtered = df[~condition_to_remove]
-        
-        # Reset the index
-        df_filtered.reset_index(drop=True, inplace=True)
-        
-        return df_filtered
-
-
-
-    def get_walks(self, walk_edges, columns, rule=None, rule_Len=0):
-        df_edges = []
-        df = pd.DataFrame(
-            walk_edges[0],
-            columns=[c + str(0) for c in columns] + ["entity_" + str(1)],
-            dtype=int,
-        )
-
-        df_edges.append(df)
-        df = df[0:0]
-
-        for i in range(1, len(walk_edges)):
-            df = pd.DataFrame(
-                walk_edges[i],
-                columns=[c + str(i) for c in columns] + ["entity_" + str(i+1)],
-                dtype=int,
-            )
-
-            df_edges.append(df)
-            df = df[0:0]
-
-        rule_walks = df_edges[0]
-        df_edges[0] = df_edges[0][0:0]
-
-        idx_TR_ls = 0
-        for i in range(1, len(df_edges)):
-            rule_walks = pd.merge(rule_walks, df_edges[i], on=["entity_" + str(i)])
-            rule_walks = self.remove_matching_rows(rule_walks) # remove path that contains repeated edges 
-            if (rule is not None) and (self.f_non_Markovian):
-                if self.f_adjacent_TR_only:
-                    # remove path that does not satisfy the TR constraint
-                    rule_walks_np = rule_walks.to_numpy()
-                    idx_st = 4*(i-1) + 2 # [s, r, t_s, t_e, o]
-                    idx_ed = 4*i + 2
-                    # # since we remove previous time information
-                    # idx_st -= 2*(i-1)
-                    # idx_ed -= 2*(i-1)
-                    cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
-                    mask = pd.Series(cur_TR == rule[rule_Len+i+1])
-                    rule_walks = rule_walks[mask]
-
-                    # remove previous time information (we cannot since we need to remove path that contains repeated edges)
-                    # preserve_list_row = [1] * i + [0, 0, 1, 1, 1, 1]
-                    # if i == len(df_edges)-1:
-                    #     preserve_list_row = [1] * i + [0, 0, 1, 0, 0, 1] # remove the last time information
-                    # mask_row = pd.Series(preserve_list_row, index=rule_walks.columns).astype(bool)
-                    # rule_walks = rule_walks.loc[:, mask_row]
-                else:
-                    # remove path that does not satisfy the TR constraint
-                    rule_walks_np = rule_walks.to_numpy()
-                    idx_ed = 4*i + 2
-                    for j in range(i):
-                        idx_st = 4*j + 2
-                        cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
-                        mask = pd.Series(cur_TR == rule[rule_Len*2 + idx_TR_ls])
-                        idx_TR_ls += 1
-                        rule_walks = rule_walks[mask]
-
-            df_edges[i] = df_edges[i][0:0]
-        
-        return rule_walks
-
-
-    def get_weights_savepath(self, rel_idx, ruleLen, train_idx):
-        return self.weights_savepath + '_rel_'+ str(rel_idx) +'_len_'+ str(ruleLen) + '_idx_'+ str(train_idx) +'.json'
-
-    def get_weights_savepath_v2(self, rel_idx):
-        return self.weights_savepath + '_rel_'+ str(rel_idx) +'.json'
-
-
-    # def make_specific_rules(self, rule_walks, mode):
-    #     dur_list = [(0,6), (6,11), (11,21), (21,10000)]
-    #     if 'dur' in mode:
-    #         mode_t = []
-    #         for i in range(rule_walks.shape[1]//2):
-    #             dur = rule_walks[:,2*i+1] - rule_walks[:,2*i]
-    #             res = dur.copy()
-    #             # print(res)
-    #             for j in range(len(dur_list)):
-    #                 res[(dur>=dur_list[j][0]) & (dur<dur_list[j][1])] = j
-    #             # print(res)
-    #             mode_t.append(res.reshape(-1,1))
-    #         if len(mode_t) == 1:
-    #             mode_t = mode_t[0].tolist()
-    #         else:
-    #             mode_t = np.hstack(mode_t).tolist()
-
-    #         # print(mode_t)
-    #         c = Counter([str(t) for t in mode_t])
-    #         c = dict(c)
-    #         s = sum(c.values())
-    #         for k in c.keys():
-    #             c[k] = c[k]/s
-    #         # print(c)
-    #     return c
-
-
-    def my_convert_to_list(self, res_prob_ls):
-        new_res_prob_ls = []
-        for prob_ls in res_prob_ls:
-            new_prob_ls = []
-            for prob in prob_ls:
-                new_prob_ls.append(prob.tolist())
-            new_res_prob_ls.append(new_prob_ls)
-        return new_res_prob_ls
-
-    def my_convert_to_list_v2(self, res_prob_ls):
-        new_res_prob_ls = []
-        for prob in res_prob_ls:
-            new_res_prob_ls.append(prob.tolist())
-        return new_res_prob_ls
-
-    def my_merge_dict(self, dict1, dict2):
-        for k in dict2.keys():
-            if k not in dict1.keys():
-                dict1[k] = dict2[k]
-            else:
-                dict1[k] += dict2[k]
-        return dict1
-
-    def my_split_list(self, ls1, max_num):
-        n_s = len(ls1)//max_num
-        res = []
-        for i in range(n_s):
-            res.append(ls1[max_num*i:max_num*(i+1)])
-
-        if len(ls1)>max_num*n_s:
-            res.append(ls1[max_num*n_s:])
-        return res
-
-    def obtain_edges_given_nodes(self, edges, st_node, end_node, query_int):
-        x = (edges[:,0] == st_node) & (edges[:,2] == end_node)
-        rel = edges[x, 1]
-        tmp_rel = self.obtain_tmp_rel(edges[x, 3:], query_int)
-        # print(edges[x,:])
-        return rel, tmp_rel + 1
-
-    def obtain_query_inv(self, query):
-        x = int(self.num_rel/2)
-        if query[1] > x:
-            return [query[2], query[1]-x, query[0], query[3], query[4]]
-        else:
-            return [query[2], query[1]+x, query[0], query[3], query[4]]
-
-
-    def obtain_sp_rule_walks(self, ent_walks, rule, rule_Len, facts):
-        rel_ls = rule[:rule_Len]
-        pattern_ls = rule[rule_Len:]
-
-        path_ls = []
-        for i in range(rule_Len):
-            y = facts[np.isin(facts[:, 0], ent_walks[:,i]) & (facts[:, 1] == rel_ls[i]) & \
-                                np.isin(facts[:, 2], ent_walks[:,i+1]) & (facts[:, 3] == pattern_ls[i])]
-            path_ls.append(y[:, [0,4,5,2]])
-
-        # print(path_ls)
-
-        z = ['entity_', 'ts_', 'te_']
-        cur_ent_walk_res = self.get_walks(path_ls, z).to_numpy()
-        path_ls = []
-
-        sp_ls = []
-        for i1 in range(1, rule_Len):
-            for i2 in range(i1):
-                # print(i1,i2)
-                x = self.obtain_tmp_rel(cur_ent_walk_res[:,3*i1+1:3*i1+3], cur_ent_walk_res[:,3*i2+1:3*i2+3])
-                sp_ls.append(x.reshape(-1,1))
-
-        y = cur_ent_walk_res[:, [3*i1 for i1 in range(rule_Len)]]
-
-        x = np.hstack([y, np.hstack(sp_ls), cur_ent_walk_res[:,-1:]])
-        x = np.unique(x, axis=0)
-        return x[:, rule_Len:]
-
-
-    def obtain_tmp_rel(self, int1, int2, tol_gap=[0, 0]):
-        if len(int2.shape) == 1:
-            return ((int1[:, 1] <= int2[0] - tol_gap[0]) & (int1[:, 0] <= int2[0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[1] + tol_gap[1]) & (int1[:, 1] >= int2[1] + tol_gap[1]))*1
-        else:
-            return ((int1[:, 1] <= int2[:,0] - tol_gap[0]) & (int1[:, 0] <= int2[:,0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[:,1] + tol_gap[1]) & (int1[:, 1] >= int2[:,1] + tol_gap[1]))*1
-
-
-    def collect_rules(self, idx_ls, rel_idx):
-        if not isinstance(idx_ls, list):
-            idx_ls = [idx_ls]
-
-        rules_dict = []
-        for idx in idx_ls:
-            if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-
-            if not os.path.exists(path):
-                # print(path + ' not found')
-                cur_rules_dict = {}
-            else:
-                with open(path, 'r') as f:
-                    cur_rules_dict = json.load(f)
-            for s_i in cur_rules_dict.keys():
-                rule_len = int(s_i)
-                if self.f_non_Markovian:
-                    mask_pre = [1]*(rule_len + int(rule_len>1)) if self.f_adjacent_TR_only else [1]*(2*rule_len + rule_len*(rule_len-1)/2)
-                else:
-                    mask_pre = [1]*2*rule_len
-                alpha_dict = self.merge_rules(cur_rules_dict[s_i], mask_pre) # merged rules share the same shallow score
-                rules_dict += [r for r in alpha_dict]
-
-        # counter and select most freq
-        self.shallow_rule_dict[rel_idx] = self.count_lists(rules_dict)[:self.shallow_score_length]
-
-        return
-
-
-    def merge_rules(self, rules_dict, mask_pre):
-        # mask_pre: [1, 1, 1, 0, 0, ...] decide which notations to preserve
-        alpha_dict = {}
-        for r in rules_dict:
-            cur_rule = tuple([a*b for a, b in zip(r['rule'], mask_pre)])
-            if cur_rule not in alpha_dict:
-                alpha_dict[cur_rule] = []
-            alpha_dict[cur_rule].append(r['alpha'])
-        return alpha_dict
-
-
-    def merge_dicts(self, dict_list, num_samples):
-        merged_dict = defaultdict(list)
-        for d in dict_list:
-            merged_dict[tuple(d['rule'])].append(d['alpha'])
-        merged_dict = dict(merged_dict)
-        for rule in merged_dict:
-            merged_dict[rule] = np.mean(merged_dict[rule] + [0] * (num_samples - len(merged_dict[rule])))
-        return merged_dict
-
-
-
-    def data_collection(self, idx_ls):
-        '''
-        If we process multiple samples at one time, the problem is that A can vote 10 times if it has 10 rules but B can only vote 5 times if it has 5 rules.
-        We can process each sample separately but it is time-consuming.
-        Instead, we merge the rule dict and calculate the average alpha.
-        '''
-        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
-        idx_ls = [idx_ls] if not isinstance(idx_ls, list) else idx_ls
-
-        rules_dict, shallow_rules_dict = {}, {}
-        for idx in idx_ls:
-            path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else \
-                   '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            # print(path)
-
-            if not os.path.exists(path):
-                # print(path + ' not found')
-                cur_rules_dict = {}
-            else:
-                with open(path, 'r') as f:
-                    cur_rules_dict = json.load(f)
-
-            for rule_len in cur_rules_dict.keys():
-                rules_dict[rule_len] = [] if rule_len not in rules_dict.keys() else rules_dict[rule_len]
-                rules_dict[rule_len] += cur_rules_dict[rule_len]
-
-                mask_pre = [1] * (2*int(rule_len) + int(rule_len>1)) if self.f_adjacent_TR_only else [1] * (2*int(rule_len) + int(rule_len)*(int(rule_len)-1)/2)
-                alpha_dict = self.merge_rules(cur_rules_dict[rule_len], mask_pre)
-                # print(alpha_dict)
-                shallow_rules_dict[rule_len] = [] if rule_len not in shallow_rules_dict.keys() else shallow_rules_dict[rule_len]
-                shallow_rules_dict[rule_len] += [{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict]
-        
-        for rule_len in rules_dict:
-            rules_dict[rule_len] = self.merge_dicts(rules_dict[rule_len], len(idx_ls))
-            rules_dict[rule_len] = [{'rule': list(key), 'alpha': value} for key, value in rules_dict[rule_len].items()]
-
-            shallow_rules_dict[rule_len] = self.merge_dicts(shallow_rules_dict[rule_len], len(idx_ls))
-            shallow_rules_dict[rule_len] = [{'rule': list(key), 'alpha': value} for key, value in shallow_rules_dict[rule_len].items()]
-
-        return rules_dict, shallow_rules_dict
-
-
-
-    def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, TR_ls_len):
-        rules_dict, shallow_rules_dict = self.data_collection(idx_ls)
-        
-        input_dict = {}
-        f_valid = 0
-        shallow_rule_idx, shallow_rule_alpha = np.zeros((1, self.shallow_score_length)), np.zeros((1, self.shallow_score_length))
-  
-        for i in range(self.max_explore_len):
-            rule_len = str(i+1)
-            if rule_len in rules_dict.keys():
-                rel_ls, TR_ls, alpha_ls = [], [], []
-                for r in rules_dict[rule_len]:
-                    if isinstance(r, dict):
-                        rel_ls.append(r['rule'][:i+1])
-                        TR_ls.append([const_pattern_ls.index(TR) for TR in r['rule'][i+1:]])
-                        alpha_ls.append([r['alpha']])
-                if len(rel_ls)>0:
-                    input_dict[i] = {'rel': np.array(rel_ls), 'TR': np.array(TR_ls), 'alpha': np.array(alpha_ls)}
-                    f_valid = 1
-            else:
-                input_dict[i] = {'rel': np.zeros((1, i+1)), 'TR': np.zeros((1, TR_ls_len[i])), 'alpha': np.zeros((1, 1))}
-
-            if rule_len in shallow_rules_dict.keys():
-                for r in shallow_rules_dict[rule_len]:
-                    cur_shallow_rule = r['rule']
-                    if cur_shallow_rule not in self.shallow_rule_dict[rel_idx]:
-                        continue
-                    shallow_rule_idx[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] = 1
-                    shallow_rule_alpha[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] += r['alpha']
-
-        return input_dict, f_valid, shallow_rule_idx, shallow_rule_alpha
-
-
-
-    def prepare_inputs_tfm_test(self, train_edges, query_rel, query_time, candidate, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
-        x = train_edges[train_edges[:,0] == candidate]
-
-        h_rec = 1-p_rec[query_rel]
-
-        related_rel_dict = []
-        h_order = []
-        h_pair = []
-        for rel in np.unique(x[:,1]):
-            if rel == query_rel:
-                h_rec = p_rec[query_rel]
-
-            if p_order[(query_rel, rel)]>0:
-                related_rel_dict.append(rel)
-                x1 = x[x[:,1] == rel][:,3] - query_time
-                idx = np.argmin(np.abs(x1))
-                if x1[idx] >=0:
-                    h_order.append(p_order[(query_rel, rel)])
-                else:
-                    h_order.append(1-p_order[(query_rel, rel)])
-
-                h_pair.append(norm(mu_pair[(query_rel, rel)], sigma_pair[(query_rel, rel)]).pdf(np.abs(x1[idx])))
-                # h_pair.append(lambda_pair[(query_rel, rel)]*np.exp(-lambda_pair[(query_rel, rel)]*np.abs(x1[idx])))
-
-        return related_rel_dict, h_rec, h_order, h_pair
-
-
-    def prepare_inputs_tfm_Wc_test(self, query_rel, ts_dict, p_order, mu_pair, sigma_pair, lambda_pair):
-        related_rel_dict = []
-        h_order = []
-        h_pair = []
-        for rel in ts_dict:
-            if p_order[(query_rel, rel)]>0:
-                related_rel_dict.append(rel)
-                x1 = ts_dict[rel]
-                idx = np.argmin(np.abs(x1))
-                if x1[idx] >=0:
-                    h_order.append(p_order[(query_rel, rel)])
-                else:
-                    h_order.append(1-p_order[(query_rel, rel)])
-
-                h_pair.append(norm(mu_pair[(query_rel, rel)], sigma_pair[(query_rel, rel)]).pdf(np.abs(x1[idx])))
-                # h_pair.append(lambda_pair[(query_rel, rel)]*np.exp(-lambda_pair[(query_rel, rel)]*np.abs(x1[idx])))
-
-        return related_rel_dict, h_order, h_pair
-
-
-
-    def prepare_inputs_tfm(self, train_edges, idx, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
-        query = train_edges[idx]
-        if train_edges[idx][1]>= self.num_rel//2:
-            query_rel = train_edges[idx][1] - self.num_rel//2
-        else:
-            query_rel = train_edges[idx][1] + self.num_rel//2
-
-        query_rel_one_hot = [0] * self.num_rel
-        query_rel_one_hot[query_rel] = 1
-
-        h_rec = 1-p_rec[query_rel]
-
-        rev_query = [query[2], query_rel, query[0], query[3], query[4]]
-        x = train_edges[~np.all(train_edges == rev_query, axis=1)]
-        x = x[x[:,0] == rev_query[0]]
-
-        related_rel_dict = []
-        h_order = []
-        h_pair = []
-        for rel in np.unique(x[:,1]):
-            if rel == query_rel:
-                h_rec = p_rec[query_rel]
-
-            if p_order[(query_rel, rel)]>0:
-                related_rel_dict.append(rel)
-                x1 = x[x[:,1] == rel][:,3] - rev_query[3]
-                idx = np.argmin(np.abs(x1))
-                if x1[idx] >=0:
-                    h_order.append(p_order[(query_rel, rel)])
-                else:
-                    h_order.append(1-p_order[(query_rel, rel)])
-
-                h_pair.append(norm(mu_pair[(query_rel, rel)], sigma_pair[(query_rel, rel)]).pdf(np.abs(x1[idx])))
-                # h_pair.append(lambda_pair[(query_rel, rel)]*np.exp(-lambda_pair[(query_rel, rel)]*np.abs(x1[idx])))
-
-        if len(related_rel_dict)==0:
-            f_exist = [1,0,0]
-            related_rel_dict = [0]
-            h_order = [0]
-            h_pair = [0]
-        else:
-            f_exist = [1,1,1]
-
-        input_dict = {}
-        input_dict['query_rel'] = np.array([query_rel])
-        input_dict['query_rel_one_hot'] = np.array(query_rel_one_hot)
-        input_dict['related_rel_dict'] = np.array(related_rel_dict)
-        input_dict['h_rec'] = np.array([h_rec])
-        input_dict['h_order'] = np.array(h_order)
-        input_dict['h_pair'] = np.array(h_pair)
-        input_dict['f_exist'] = np.array(f_exist)
-
-        # print(input_dict)
-
-        return input_dict
-
-
-    def prepare_inputs_tfm_v2(self, train_edges, idx_ls, p_rec, p_order, mu_pair, sigma_pair, lambda_pair):
-        query_rel = []
-        query_rel_one_hot = []
-        related_rel_dict = []
-        h_rec = []
-        h_order = []
-        h_pair = []
-        f_exist = []
-        mask = []
-
-        max_num_related_rel = self.num_rel
-        for idx in idx_ls:
-            cur_query = train_edges[idx]
-            if train_edges[idx][1]>= self.num_rel//2:
-                cur_query_rel = train_edges[idx][1] - self.num_rel//2
-            else:
-                cur_query_rel = train_edges[idx][1] + self.num_rel//2
-
-            cur_query_rel_one_hot = [0] * self.num_rel
-            cur_query_rel_one_hot[cur_query_rel] = 1
-
-            cur_h_rec = 1-p_rec[cur_query_rel]
-
-            cur_rev_query = [cur_query[2], cur_query_rel, cur_query[0], cur_query[3], cur_query[4]]
-            x = train_edges[~np.all(train_edges == cur_rev_query, axis=1)]
-            x = x[x[:,0] == cur_rev_query[0]]
-
-            cur_related_rel_dict = []
-            cur_h_order = []
-            cur_h_pair = []
-            for rel in np.unique(x[:,1]):
-                if rel == cur_query_rel:
-                    cur_h_rec = p_rec[cur_query_rel]
-
-                if p_order[(cur_query_rel, rel)]>0:
-                    cur_related_rel_dict.append(rel)
-                    x1 = x[x[:,1] == rel][:,3] - cur_rev_query[3]
-                    idx = np.argmin(np.abs(x1))
-                    if x1[idx] >=0:
-                        cur_h_order.append(p_order[(cur_query_rel, rel)])
-                    else:
-                        cur_h_order.append(1-p_order[(cur_query_rel, rel)])
-
-                    cur_h_pair.append(norm(mu_pair[(cur_query_rel, rel)], sigma_pair[(cur_query_rel, rel)]).pdf(np.abs(x1[idx])))
-                    # cur_h_pair.append(lambda_pair[(cur_query_rel, rel)]*np.exp(-lambda_pair[(cur_query_rel, rel)]*np.abs(x1[idx])))
-
-            mask.append([1.]*len(cur_related_rel_dict))
-
-            if len(cur_related_rel_dict)==0:
-                cur_f_exist = [1,0,0]
-                cur_related_rel_dict = [0]
-                cur_h_order = [0]
-                cur_h_pair = [0]
-            else:
-                cur_f_exist = [1,1,1]
-
-            query_rel.append([cur_query_rel])
-            query_rel_one_hot.append(cur_query_rel_one_hot)
-            related_rel_dict.append(cur_related_rel_dict)
-            h_rec.append([cur_h_rec])
-            h_order.append(cur_h_order)
-            h_pair.append(cur_h_pair)
-            f_exist.append(cur_f_exist)
-            # max_num_related_rel = max(max_num_related_rel, len(cur_related_rel_dict))
-
-        for i in range(len(idx_ls)):
-            related_rel_dict[i] += [0]*(max_num_related_rel-len(related_rel_dict[i]))
-            h_order[i] += [0]*(max_num_related_rel-len(h_order[i]))
-            h_pair[i] += [0]*(max_num_related_rel-len(h_pair[i]))
-            mask[i] += [0]*(max_num_related_rel-len(mask[i]))
-
-        input_dict = {}
-        input_dict['query_rel'] = np.array(query_rel)
-        input_dict['query_rel_one_hot'] = np.array(query_rel_one_hot)
-        input_dict['related_rel_dict'] = np.array(related_rel_dict)
-        input_dict['h_rec'] = np.array(h_rec)
-        input_dict['h_order'] = np.array(h_order)
-        input_dict['h_pair'] = np.array(h_pair)
-        input_dict['f_exist'] = np.array(f_exist)
-        input_dict['mask'] = np.array(mask)
-
-        # print(input_dict)
-
-        return input_dict
-
-
-    def prepare_inputs_tfm_Wc_v2(self, train_edges, idx_ls, p_order, mu_pair, sigma_pair, lambda_pair):
-        query_rel_one_hot = []
-        related_rel_dict = []
-        h_order = []
-        h_pair = []
-        f_exist = []
-        mask = []
-
-        max_num_related_rel = self.num_rel
-        for idx in idx_ls:
-            cur_query_rel = train_edges[idx][1]
-            cur_query_rel_one_hot = [0] * self.num_rel
-            cur_query_rel_one_hot[cur_query_rel] = 1
-
-            cur_related_rel_dict = []
-            cur_h_order = []
-            cur_h_pair = []
-
-            if self.overall_mode == 'general':
-                path = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-
-            if os.path.exists(path):
-                with open(path) as f:
-                    data = json.load(f)
-
-                for k in data.keys():
-                    if isinstance(data[k], int):
-                        rel = int(k)
-
-                        if p_order[(cur_query_rel, rel)]>0:
-                            cur_related_rel_dict.append(rel)
-                            if data[k] >=0:
-                                cur_h_order.append(p_order[(cur_query_rel, rel)])
-                            else:
-                                cur_h_order.append(1-p_order[(cur_query_rel, rel)])
-
-                            cur_h_pair.append(norm(mu_pair[(cur_query_rel, rel)], sigma_pair[(cur_query_rel, rel)]).pdf(np.abs(data[k])))
-                            # cur_h_pair.append(lambda_pair[(cur_query_rel, rel)]*np.exp(-lambda_pair[(cur_query_rel, rel)]*np.abs(data[k])))
-
-            mask.append([1.]*len(cur_related_rel_dict))
-
-            if len(cur_related_rel_dict)==0:
-                cur_f_exist = [0,0]
-                cur_related_rel_dict = [0]
-                cur_h_order = [0]
-                cur_h_pair = [0]
-            else:
-                cur_f_exist = [1,1]
-
-            query_rel_one_hot.append(cur_query_rel_one_hot)
-            related_rel_dict.append(cur_related_rel_dict)
-            h_order.append(cur_h_order)
-            h_pair.append(cur_h_pair)
-            f_exist.append(cur_f_exist)
-
-        for i in range(len(idx_ls)):
-            related_rel_dict[i] += [0]*(max_num_related_rel-len(related_rel_dict[i]))
-            h_order[i] += [0]*(max_num_related_rel-len(h_order[i]))
-            h_pair[i] += [0]*(max_num_related_rel-len(h_pair[i]))
-            mask[i] += [0]*(max_num_related_rel-len(mask[i]))
-
-        input_dict = {}
-        input_dict['query_rel_one_hot'] = np.array(query_rel_one_hot)
-        input_dict['related_rel_dict'] = np.array(related_rel_dict)
-        input_dict['h_order'] = np.array(h_order)
-        input_dict['h_pair'] = np.array(h_pair)
-        input_dict['f_exist'] = np.array(f_exist)
-        input_dict['mask'] = np.array(mask)
-
-        return input_dict
-
-
-
-    def print_dict(self, dict1):
-        print('start')
-        for k in dict1.keys():
-            print(k, dict1[k])
-        print('end')
-
-
-    def tmp_stat(self, rel_idx, facts):
-        x = facts[facts[:,1]==rel_idx]
-        y = x[:,4] - x[:,3]
-        # print(x[x[:,4] - x[:,3]<0])
-        y = sorted(y)
-        print(Counter(y))
-        print(y[len(y)//2])
-
-
-    def select_events(self, related_facts, query_int):
-        z = np.unique(related_facts[:,:3], axis=0)
-        y = []
-        for edge in z:
-            x = np.all(related_facts[:,:3] == edge, axis=1)
-            x = related_facts[x]
-            x1 = x[x[:,3] <= query_int[0]]
-            f_x = 0
-            if len(x1) == 0:
-                x1 = x.copy()
-                f_x = 1
-            if f_x == 0:
-                t_s = max(x1[:,3])
-                t_e = max(x1[x1[:,3] == t_s][:,4])
-            else:
-                t_s = min(x1[:,3])
-                t_e = min(x1[x1[:,3] == t_s][:,4])
-
-            y.append([edge[0], edge[2], t_s, t_e])
-
-        related_facts = np.array(y)
-        return related_facts
-
-
-    def split_rel(self, rel_idx, split_range, facts):
-        facts1 = facts.copy()
-        for i in range(len(split_range)):
-            facts1[(facts1[:,1]==rel_idx) & np.isin(facts1[:,4] - facts1[:,3], split_range[i]), 1] = rel_idx + 100*i
-        return facts1
-
-
-    def variable_init_v3(self):
-        prob_rel_ls = []
-        prob_pattern_ls = []
-        prob_ruleLen = tf.nn.softmax(tf.Variable(np.random.rand(1, self.num_ruleLen), dtype=tf.float32), axis=1)
-
-        for i in range(1, self.num_ruleLen+1):
-            prob_rel = tf.nn.softmax(tf.Variable(np.random.rand(self.num_rel, i), dtype=tf.float32), axis=0)
-            prob_rel = tf.split(prob_rel, i, axis=1)
-            prob_rel_ls.append(prob_rel)
-
-            prob_pattern = tf.nn.softmax(tf.Variable(np.random.rand(self.num_pattern, i), dtype=tf.float32), axis=0)
-            prob_pattern = tf.split(prob_pattern, i, axis=1)
-            prob_pattern_ls.append(prob_pattern)
-
-        return prob_rel_ls, prob_pattern_ls, prob_ruleLen
-
-
-    def variable_init_tfm(self):
-        var_W_rec = tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32)
-        var_b_rec = tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32)
-
-        var_W_order_ls = []
-        var_b_order_ls = []
-        var_W_pair_ls = []
-        var_b_pair_ls = []
-
-        for i in range(self.num_rel):
-            var_W_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_b_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_W_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_b_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-
-        gamma_tfm = tf.nn.softmax(tf.Variable(np.random.rand(1,3), dtype=tf.float32), axis=1)
-
-        return var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm
-
-
-    def variable_init_tfm_Wc(self):
-        var_W_order_ls = []
-        var_b_order_ls = []
-        var_W_pair_ls = []
-        var_b_pair_ls = []
-
-        for i in range(self.num_rel):
-            var_W_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_b_order_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_W_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-            var_b_pair_ls.append(tf.Variable(np.random.rand(self.num_rel,1), dtype=tf.float32))
-
-        gamma_tfm = tf.nn.softmax(tf.Variable(np.random.rand(1,2), dtype=tf.float32), axis=1)
-
-        return var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm

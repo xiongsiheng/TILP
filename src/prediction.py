@@ -2,14 +2,14 @@ import json
 from joblib import Parallel, delayed
 import os
 from tqdm import tqdm
-from Models import TILP
+from Models import *
 
 
 
 
 def my_predict(model_paras, i, num_queries, num_processes, rel_idx, bg_pred, test_data, test_data_inv,
                 const_pattern_ls, assiting_data, dist_pars, train_edges):
-    my_model = TILP(*model_paras)
+    my_model = Predictor(*model_paras)
     rank_dict = my_model.predict_in_batch(i, num_queries, num_processes, rel_idx, bg_pred, 
                                             test_data, test_data_inv,
                                             const_pattern_ls, assiting_data, dist_pars, train_edges)

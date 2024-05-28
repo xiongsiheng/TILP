@@ -1,6 +1,6 @@
 import json
 from joblib import Parallel, delayed
-from Models import TILP
+from Models import *
 
 
 # def my_train(i, num_relations, num_processes):
@@ -11,7 +11,7 @@ from Models import TILP
 #         relations_idx = range(i * num_relations, num_rel1)
 
 #     loss_dict = {}
-#     my_trainer = TILP(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+#     my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
 
 #     for rel_idx in relations_idx:
 #         loss_dict[rel_idx] = {}
@@ -46,7 +46,7 @@ from Models import TILP
 
 #     loss_dict = {}
 #     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-#     my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+#     my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
 #     num_trainMax_dict = [(0,300,3000),(300,1000,1200),(1000,3000,400),(3000,100000,120)]
 
@@ -76,7 +76,7 @@ from Models import TILP
 
 #     loss_dict = {}
 #     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode = para_ls_for_trainer
-#     my_trainer = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+#     my_trainer = Trainer(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
 #     num_trainMax_dict = [(0,300,3000),(300,1000,1200),(1000,3000,400),(3000,100000,120)]
 
@@ -95,7 +95,7 @@ from Models import TILP
 
 
 def my_train_v4(rel_empty_ls, model_paras, train_edges, const_pattern_ls, num_epoch=50):
-    my_model = TILP(*model_paras)
+    my_model = Trainer(*model_paras)
     loss = my_model.TRL_model_training_v2(rel_empty_ls, num_epoch, train_edges, const_pattern_ls)
     loss_dict = {}
     loss_dict['loss_hist'] = [l.tolist() for l in loss]
@@ -172,10 +172,10 @@ def do_my_train_TRL(model_paras, dataset_using, train_edges, const_pattern_ls,
 
 
 def do_my_train_tfm(model_paras, rel_ls, train_edges, dist_pars, num_epoch = 100):
-    my_model = TILP(*model_paras)
+    my_model = Trainer(*model_paras)
     my_model.train_tfm_v2(rel_ls, num_epoch, train_edges, dist_pars)
 
 
 def do_my_train_tfm_Wc(model_paras, rel_ls, train_edges, dist_pars, num_epoch = 100):
-    my_model = TILP(*model_paras)
+    my_model = Trainer(*model_paras)
     my_model.train_tfm_Wc_v2(rel_ls, num_epoch, train_edges, dist_pars)

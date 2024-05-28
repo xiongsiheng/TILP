@@ -10,7 +10,7 @@ import copy
 from collections import Counter
 from scipy.stats import norm
 
-from Models import TILP
+from Models import *
 from dataset_setting import *
 
 
@@ -48,7 +48,7 @@ def str_to_list(str1):
 
 def my_explore_queries_single(para_ls):
     num_rel, num_pattern, num_ruleLen, dataset_using, overall_mode, train_edges, valid_data, valid_data_inv, rel_idx, j = para_ls
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model = Walker(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
 
     if rel_idx < num_rel//2:
         valid_data_using = valid_data
@@ -63,7 +63,7 @@ def my_explore_queries_single(para_ls):
 
 
 def my_explore_queries(rel_ls, f_save=True, mode='general'):
-    my_model = TILP(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
+    my_model = Walker(num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode)
     res_dict_total = {}
     for rel_idx in rel_ls:
         if rel_idx < num_rel//2:

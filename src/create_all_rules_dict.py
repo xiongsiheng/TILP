@@ -1,7 +1,7 @@
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from Models import TILP
+from Models import *
 
 
 def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, model_paras, num_rel):
@@ -16,7 +16,7 @@ def my_create_all_rule_dicts(i, n_s, n_p, rel_idx, train_edges, model_paras, num
     else:
         idxs = range(s+i * n_s, s+n_t)
 
-    my_model = TILP(*model_paras)
+    my_model = Collector(*model_paras)
     rule_dict, rule_sup_num_dict = my_model.create_all_rule_dicts(rel_idx, train_edges, idxs)
     
     return rule_dict, rule_sup_num_dict
@@ -29,7 +29,7 @@ def do_my_create_all_rule_dicts(this_rel, train_edges, model_paras, num_rel, num
                                             model_paras, num_rel) 
                                             for i in range(num_processes)
     )
-    my_model = TILP(*model_paras)
+    my_model = Collector(*model_paras)
     rule_sup_num_dict, rule_dict = {}, {}
     for i in range(num_processes):
         rule_sup_num_dict = my_model.my_merge_dict(rule_sup_num_dict, output[i][1])
@@ -47,7 +47,7 @@ def do_my_create_all_rule_dicts(this_rel, train_edges, model_paras, num_rel, num
 
 
 def do_rule_summary(rel_ls, model_paras, num_rel, train_edges, const_pattern_ls, num_processes=24):
-    my_model = TILP(*model_paras)
+    my_model = Collector(*model_paras)
     for rel in rel_ls:
         # collect data
         rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, model_paras, num_rel, num_processes=num_processes)
@@ -60,7 +60,7 @@ def do_rule_summary(rel_ls, model_paras, num_rel, train_edges, const_pattern_ls,
 
 
 def do_calculate_rule_scores(rel_ls, model_paras, num_rel, train_edges, const_pattern_ls, num_processes=24):
-    my_model = TILP(*model_paras)
+    my_model = Collector(*model_paras)
     for rel in tqdm(rel_ls, desc='rule summary: '):
         # collect data
         rule_dict, rule_sup_num_dict = do_my_create_all_rule_dicts(rel, train_edges, model_paras, num_rel, num_processes=num_processes)
