@@ -2,6 +2,8 @@ import json
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from Models import TILP
+import os
+import glob
 
 
 
@@ -16,6 +18,16 @@ def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, model_pa
 
 def do_my_find_rules(rel_ls, train_edges, model_paras, mode='path_search', path_name='', 
                     pos_examples_idx=None, time_shift_mode=0, num_processes=24):
+
+    if mode == 'path_search':
+        # delete all previous files
+        _, _, _, _, dataset_using, overall_mode = model_paras
+        path = '../output/found_rules/' if overall_mode == 'general' else \
+            '../output/found_rules_'+ overall_mode +'/'
+        files = glob.glob(os.path.join(path, dataset_using +'_train_query_*'))
+        for file in files:
+            os.remove(file)
+
     for this_rel in tqdm(rel_ls, desc=mode):
         num_queries = (len(train_edges)//2) // num_processes
         Parallel(n_jobs=num_processes)(

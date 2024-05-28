@@ -190,14 +190,10 @@ class TILP(object):
                             continue
 
                         for l in range(self.max_explore_len):
-                            cur_input_dict[rel_dict[l]] = x[l]['rel']
-                            cur_input_dict[TR_dict[l]] = x[l]['TR']
-                            cur_input_dict[alpha_dict[l]] = x[l]['alpha']
+                            cur_input_dict[rel_dict[l]], cur_input_dict[TR_dict[l]], cur_input_dict[alpha_dict[l]] = x[l]['rel'], x[l]['TR'], x[l]['alpha']
                             # print(x[l])
 
-                        cur_input_dict[self.rel_idx] = [rel_idx]
-                        cur_input_dict[self.shallow_rule_idx] = shallow_rule_idx
-                        cur_input_dict[self.shallow_rule_alpha] = shallow_rule_alpha
+                        cur_input_dict[self.rel_idx], cur_input_dict[self.shallow_rule_idx], cur_input_dict[self.shallow_rule_alpha]  = [rel_idx], shallow_rule_idx, shallow_rule_alpha
 
                         if self.f_non_Markovian:
                             res_attn_rel_dict[rel_idx], res_attn_TR_dict[rel_idx], res_attn_TR_prime_dict[rel_idx], \
@@ -232,8 +228,7 @@ class TILP(object):
 
 
 
-    def train_tfm_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
-        p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+    def build_model_tfm(self, train_edges):
         var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm = self.variable_init_tfm()
 
         query_rel = tf.placeholder(tf.int64, shape=(None, 1))
@@ -245,19 +240,7 @@ class TILP(object):
         f_exist = tf.placeholder(tf.float32, shape=(None, 3))
         mask = tf.placeholder(tf.float32, shape=(None, self.num_rel))
 
-
-        valid_train_idx = []
-        for idx in range(len(train_edges)):
-            if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-
-            if not os.path.exists(path):
-                continue
-            valid_train_idx.append(idx)
-
-
+        valid_train_idx = self.obtain_valid_train_idx(range(len(train_edges)))
         query_score = self.calculate_tfm_score_v2(query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, 
                                               f_exist, mask, var_W_rec, var_b_rec,
                                               var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm)
@@ -269,10 +252,18 @@ class TILP(object):
 
         feed_list = [var_W_rec, var_b_rec, var_W_order_ls, var_b_order_ls, var_W_pair_ls, \
                                     var_b_pair_ls, gamma_tfm, final_loss, optimizer_step]
-        loss_avg_old = 100
+        
 
         init = tf.global_variables_initializer()
+        return query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, f_exist, mask, valid_train_idx, feed_list, init
 
+
+
+    def train_tfm_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
+        p_rec, p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+        query_rel, query_rel_one_hot, related_rel_dict, h_rec, h_order, h_pair, f_exist, mask, valid_train_idx, feed_list, init = self.build_model_tfm(train_edges)
+
+        loss_avg_old = 100
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -341,8 +332,7 @@ class TILP(object):
         return loss_avg
 
 
-    def train_tfm_Wc_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
-        p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+    def build_model_tfm_Wc(self, train_edges):
         var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm = self.variable_init_tfm_Wc()
 
         query_rel_one_hot = tf.placeholder(tf.float32, shape=(None, self.num_rel))
@@ -353,18 +343,7 @@ class TILP(object):
         mask = tf.placeholder(tf.float32, shape=(None, self.num_rel))
 
 
-        valid_train_idx = []
-        for idx in range(len(train_edges)):
-            if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-
-            if not os.path.exists(path):
-                continue
-            valid_train_idx.append(idx)
-
-
+        valid_train_idx = self.obtain_valid_train_idx(range(len(train_edges)))
         query_score = self.calculate_tfm_Wc_score_v2(query_rel_one_hot, related_rel_dict, h_order, h_pair, f_exist, mask,
                                                      var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm)
         final_loss = -tf.math.log(query_score)
@@ -374,10 +353,17 @@ class TILP(object):
         optimizer_step = optimizer.apply_gradients(gvs)
 
         feed_list = [var_W_order_ls, var_b_order_ls, var_W_pair_ls, var_b_pair_ls, gamma_tfm, final_loss, optimizer_step]
-        loss_avg_old = 100
 
         init = tf.global_variables_initializer()
+        return query_rel_one_hot, related_rel_dict, h_order, h_pair, f_exist, mask, valid_train_idx, feed_list, init
 
+
+
+    def train_tfm_Wc_v2(self, rel_idx_ls, num_training, train_edges, dist_pars):
+        query_rel_one_hot, related_rel_dict, h_order, h_pair, f_exist, mask, valid_train_idx, feed_list, init = self.build_model_tfm_Wc(train_edges)
+        p_order, mu_pair, sigma_pair, lambda_pair = dist_pars
+
+        loss_avg_old = 100
         with tf.Session() as sess:
             sess.run(init)
             for cnt in range(num_training):
@@ -445,122 +431,9 @@ class TILP(object):
         return loss_avg
 
 
-    def apply_single_rule(self, start_node, rule, rule_Len, facts, 
-                                f_print=0, return_walk=False, targ_node=None, 
-                                return_edges=False):
-        rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
-        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), ...] if only adjacent TRs are considered else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), ...]
-
-        path_ls = []
-        cur_nodes = [int(start_node)]
-        facts = facts.astype(int) # [s, r, o, TR(I, I_q), ts, te]
-
-        for i in range(rule_Len):
-            if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != rule_Len - 1:
-                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i])]
-            else:
-                # if only adjacent TRs are considered
-                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[min(i, 1)])]
-                # cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[i])]
-
-            # print(cur_edges.shape)
-            # print(cur_edges)
-            # print('---------------------')
-
-            if len(cur_edges) == 0:
-                if return_edges:
-                    return []
-                if return_walk:
-                    return {}, []
-                else:
-                    return {}
-    
-            cur_nodes = cur_edges[:, 2]
-            path_ls.append(cur_edges[:,[0,1,4,5,2]])
 
 
-        if isinstance(targ_node, int) or isinstance(targ_node, float):
-            path_ls[-1] = path_ls[-1][path_ls[-1][:,-1] == targ_node]
-
-        if return_edges:
-            return path_ls
-       
-        heads = ['entity_', 'rel_', 'ts_', 'te_'] # we need to remove path that contains repeated edges
-        cur_ent_walk_res = self.get_walks(path_ls, heads, rule, rule_Len).to_numpy()
-        
-        path_ls = []
-        cur_nodes = cur_ent_walk_res[:,-1:]
-        if f_print:
-            print(cur_ent_walk_res)
-
-        if not return_walk:
-            cur_ent_walk_res = 0
-
-        df = pd.DataFrame(cur_nodes, columns=["end_node"], dtype=int)
-        res = df["end_node"].value_counts(normalize=True).to_dict()
-
-
-        if return_walk:
-            return res, cur_ent_walk_res
-        return res
-
-
-    def alpha_calculation(self, path1, masked_facts, rel_idx, query, time_shift_mode):
-        rule_dict = {}
-        if not os.path.exists(path1):
-            return rule_dict
-        with open(path1, 'r') as f:
-            rule_dict_loaded = json.load(f)
-        
-        if self.overall_mode == 'general':
-            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-                rule_dict_summarized = json.load(f)
-        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-                rule_dict_summarized = json.load(f)
-
-        TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
-        masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
-        masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
-
-        for num in rule_dict_loaded:
-            rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
-            for r in rules:
-                if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
-                    continue
-                if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
-                    continue
-                # print(r)
-                # Instead of calculating alpha for all rules, we select most frequent ones
-                rand_num = random.random()
-                if rand_num < self.prob_cal_alpha:
-                    cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
-                    # print(cur_dict)
-                    # alpha = 0.01 # if we use sampling, it's possible we cannot find the targ node
-                    if query[2] in cur_dict.keys():
-                        alpha = cur_dict[query[2]]
-                else:
-                    alpha = 'Unknown'
-
-                if num not in rule_dict:
-                    rule_dict[num] = []
-                rule_dict[num].append({'rule': r, 'alpha': alpha})
-        return rule_dict
-
-
-    def path_search(self, path2, masked_facts, query, time_shift_mode):
-        '''
-        Different TR setting:
-        f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
-        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
-        f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
-        '''
-        if self.f_Wc_ts:
-            t_s_dict = {}
-            for k1 in range(self.num_rel):
-                t_s_dict[k1] = []
-
-        rule_dict = {}
+    def create_adj_mat(self, masked_facts):
         edges_simp = masked_facts[:,[0,2]]
         edges_simp = np.unique(edges_simp, axis=0)
         edges_simp = edges_simp.astype(int)
@@ -570,7 +443,22 @@ class TILP(object):
         adj_mat = np.zeros((self.num_entites, self.num_entites))
         adj_mat[rows, cols] = 1
 
+        return adj_mat
+
+
+
+    def path_search(self, masked_facts, query, time_shift_mode):
+        '''
+        Different TR setting:
+        f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
+        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
+        f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
+        '''
+        rule_dict = {}
+
+        adj_mat = self.create_adj_mat(masked_facts)
         cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
+        
         if len(cur_num_hops1) > 0:
             _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
             for num in cur_num_hops1:
@@ -579,11 +467,6 @@ class TILP(object):
                 for i in range(num):
                     related_facts = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
                     walk_edges.append(related_facts[:,[0,1,3,4,2]]) # [s, r, ts, te, o]
-
-                    if self.f_Wc_ts:
-                        z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
-                        for z1 in z:
-                            t_s_dict[z1[1]].append(z1[3]-query[3])
 
                 cur_ent_walk_res = self.get_walks(walk_edges, ["entity_" , "rel_", "ts_", "te_"]).to_numpy()
                 # print(cur_ent_walk_res)
@@ -623,12 +506,137 @@ class TILP(object):
                     rule_dict[num] = [] if num not in rule_dict else rule_dict[num]
                     rule_dict[num].append({'rule': r, 'alpha': 'Unknown'})
 
-            if self.f_Wc_ts:
-                for k1 in t_s_dict.keys():   
-                    t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
-                with open(path2, 'w') as f:
-                    json.dump(t_s_dict, f)
         return rule_dict
+
+
+
+    def calculate_ts_dist(self, path2, masked_facts, query, time_shift_mode):        
+        # Todo: consider time shifting setting
+        t_s_dict = {}
+        for k1 in range(self.num_rel):
+            t_s_dict[k1] = []
+
+        adj_mat = self.create_adj_mat(masked_facts)
+        cur_num_hops1, new_nodes_ls1 = self.BFS_mat_ver2(query[0], adj_mat, self.num_entites, query[2], self.max_explore_len)
+        
+        if len(cur_num_hops1) > 0:
+            _, new_nodes_ls2 = self.BFS_mat_ver2(query[2], adj_mat, self.num_entites, query[0], self.max_explore_len)
+            for num in cur_num_hops1:
+                path_ls = self.find_common_nodes(new_nodes_ls1[:num+1], new_nodes_ls2[:num+1][::-1])
+                for i in range(num):
+                    z = masked_facts[np.isin(masked_facts[:,0], path_ls[i]) & np.isin(masked_facts[:,2], path_ls[i+1])]
+                    for z1 in z:
+                        t_s_dict[z1[1]].append(z1[3]-query[3])
+
+            for k1 in t_s_dict.keys():   
+                t_s_dict[k1] = t_s_dict[k1][np.argmin(np.abs(t_s_dict[k1]))] if len(t_s_dict[k1])>0 else None
+            with open(path2, 'w') as f:
+                json.dump(t_s_dict, f)
+        return 
+
+
+
+    def alpha_calculation(self, path1, masked_facts, query, time_shift_mode):
+        rule_dict = {}
+        if not os.path.exists(path1):
+            return rule_dict
+        with open(path1, 'r') as f:
+            rule_dict_loaded = json.load(f)
+        
+        if self.overall_mode == 'general':
+            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
+        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
+            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(query[1])+'.json','r') as f:
+                rule_dict_summarized = json.load(f)
+
+        TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
+        masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
+        masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
+
+        for num in rule_dict_loaded:
+            rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
+            for r in rules:
+                if r not in [r_dict['rule'] for r_dict in rule_dict_summarized[num]]:
+                    continue
+                if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
+                    continue
+                # print(r)
+                # Instead of calculating alpha for all rules, we select most frequent ones
+                rand_num = random.random()
+                if rand_num <= self.prob_cal_alpha:
+                    cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
+                    # print(cur_dict)
+                    
+                    # if we use path sampling, it's possible we cannot find the targ node
+                    # alpha = 0.01 
+                    # if query[2] in cur_dict.keys():
+                    #     alpha = cur_dict[query[2]]
+                    
+                    alpha = cur_dict[query[2]]
+                else:
+                    alpha = 'Unknown'
+
+                if num not in rule_dict:
+                    rule_dict[num] = []
+                rule_dict[num].append({'rule': r, 'alpha': alpha})
+        return rule_dict
+
+
+
+    def apply_single_rule(self, start_node, rule, rule_Len, facts, 
+                                f_print=0, return_walk=False, targ_node=None, 
+                                return_edges=False):
+        rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
+        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), ...] if only adjacent TRs are considered else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), ...]
+
+        path_ls = []
+        cur_nodes = [int(start_node)]
+        facts = facts.astype(int) # [s, r, o, TR(I, I_q), ts, te]
+
+        for i in range(rule_Len):
+            if self.f_non_Markovian and self.f_adjacent_TR_only and i != 0 and i != rule_Len - 1:
+                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i])]
+            else:
+                # if only adjacent TRs are considered
+                cur_edges = facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[min(i, 1)])] if self.f_adjacent_TR_only else \
+                            facts[np.isin(facts[:, 0], cur_nodes) & (facts[:, 1] == rel_ls[i]) & (facts[:, 3] == TR_ls[i])]
+  
+            # print(cur_edges.shape)
+            # print(cur_edges)
+            # print('---------------------')
+
+            if len(cur_edges) == 0:
+                if return_edges:
+                    return []
+                return ({}, []) if return_walk else {}
+                
+            cur_nodes = cur_edges[:, 2]
+            path_ls.append(cur_edges[:,[0,1,4,5,2]])
+
+        if isinstance(targ_node, int) or isinstance(targ_node, float):
+            path_ls[-1] = path_ls[-1][path_ls[-1][:,-1] == targ_node]
+
+        if return_edges:
+            return path_ls
+       
+        heads = ['entity_', 'rel_', 'ts_', 'te_'] # we need to remove path that contains repeated edges
+        cur_ent_walk_res = self.get_walks(path_ls, heads, rule, rule_Len).to_numpy()
+        cur_nodes = cur_ent_walk_res[:,-1:]
+
+        if f_print:
+            print(cur_ent_walk_res)
+
+        path_ls = []
+        cur_ent_walk_res = 0 if not return_walk else cur_ent_walk_res
+
+        df = pd.DataFrame(cur_nodes, columns=["end_node"], dtype=int)
+        res = df["end_node"].value_counts(normalize=True).to_dict()
+
+        return (res, cur_ent_walk_res) if return_walk else res
+       
+
+
 
 
     def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, mode='path_search'):
@@ -637,16 +645,16 @@ class TILP(object):
         1) path_search: given a query, find all paths that satisfy the query
         2) alpha_calculation: given a query, calculate alpha for all rules
         '''
+        assert mode in ['path_search', 'alpha_calculation']
+        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
 
         idx_ls1 = idx_ls if idx_ls is not None else range(len(train_edges))
 
         for idx in idx_ls1:
-            if self.overall_mode == 'general':
-                path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-                path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path1 = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
-                path2 = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+            path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
+            path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
 
             query = train_edges[idx]
             # print(query, idx)
@@ -661,13 +669,16 @@ class TILP(object):
             masked_facts = np.delete(train_edges, [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
             masked_facts = masked_facts[masked_facts[:,3]<=query[3]] if self.overall_mode == 'time_shifting' else masked_facts
             
-            if mode == 'alpha_calculation':
-                rule_dict = self.alpha_calculation(path1, masked_facts, rel_idx, query, time_shift_mode)
-            elif mode == 'path_search':
-                rule_dict = self.path_search(path2, masked_facts, query, time_shift_mode)
-                
+            if mode == 'path_search':
+                rule_dict = self.path_search(masked_facts, query, time_shift_mode)
+            else:
+                rule_dict = self.alpha_calculation(path1, masked_facts, query, time_shift_mode)
+            
             with open(path1, 'w') as f:
                 json.dump(rule_dict, f)
+
+            if self.f_Wc_ts:
+                self.calculate_ts_dist(path2, masked_facts, query, time_shift_mode)
 
         return 
 
@@ -679,6 +690,8 @@ class TILP(object):
         self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode, mode=mode)
 
         return 
+
+
 
 
 
@@ -811,33 +824,7 @@ class TILP(object):
     #     return ent_walk_res
 
 
-
-    def predict(self, rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges,
-                    queries_idx = None, tol_gap=[0, 0], selected_rules=None, enable_pure_guessing=True,
-                    format_extra_len=0, f_predicting=0):
-
-        if self.overall_mode == 'general':
-            f_name = 'learned_rules'
-        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-            f_name = 'learned_rules_' + self.overall_mode
-        path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
-
-        if not os.path.exists(path):
-            # print(path + ' not found')
-            rule_dict1 = {}
-            if not enable_pure_guessing:
-                return {}
-        else:
-            with open(path,'r') as f:
-                rule_dict1 = json.load(f)
-
-        if rel_idx < self.num_rel//2:
-            data_using = test_data
-            s = 0
-        else:
-            data_using = test_data_inv
-            s = len(test_data)
-
+    def create_rule_score_bar(self, rule_dict1):
         rule_score_bar = {}
         for rule_Len in rule_dict1.keys():
             r_score_ls = []
@@ -846,44 +833,63 @@ class TILP(object):
             r_score_ls.sort(reverse=True)
             rule_score_bar[rule_Len] = r_score_ls[min(len(r_score_ls)-1, self.max_rulenum[int(rule_Len)])]
 
+        return rule_score_bar
 
-        mode = 0
-        if self.f_Wc_ts or self.f_non_Markovian:
-            mode = 1
 
-        if not queries_idx:
-            queries_idx = range(len(data_using))
-        
+    def create_res_ts_dict(self, query, rule, rule_Len, cur_walk, res_ts_dict):
+        for w in cur_walk:
+            if w[-1] not in res_ts_dict:
+                res_ts_dict[w[-1]] = {}
+            for l in range(int(rule_Len)):
+                if rule['rule'][l] not in res_ts_dict[w[-1]]:
+                    res_ts_dict[w[-1]][rule['rule'][l]] = []
+                res_ts_dict[w[-1]][rule['rule'][l]].append(w[3*l+1]-query[3])
+        return res_ts_dict
+
+
+    def predict(self, rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges,
+                    queries_idx = None, tol_gap=[0, 0], selected_rules=None, enable_pure_guessing=True,
+                    format_extra_len=0, f_predicting=0):
+
+        f_name = 'learned_rules' if self.overall_mode == 'general' else 'learned_rules_' + self.overall_mode
+        path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
+
+        if not os.path.exists(path):
+            # print(path + ' not found')
+            rule_dict1 = {}
+            if not enable_pure_guessing:
+                return {}
+        else:
+            with open(path, 'r') as f:
+                rule_dict1 = json.load(f)
+
+        data_using = test_data if rel_idx < self.num_rel//2 else test_data_inv
+        s = 0 if rel_idx < self.num_rel//2  else len(test_data)
+        rule_score_bar = self.create_rule_score_bar(rule_dict1)
+        mode = 1 if self.f_Wc_ts or self.f_non_Markovian else 0
+        queries_idx = range(len(data_using)) if queries_idx is None else queries_idx
 
         rank_dict = {}
         for idx in queries_idx:
             if data_using[idx][1] != rel_idx:
                 continue
             
-            line = data_using[idx]
-            cur_bg_pred = bg_pred[bg_pred[:, 3]<line[3]] if f_predicting else bg_pred
+            query = data_using[idx]
+            cur_bg_pred = bg_pred[bg_pred[:, 3]<query[3]] if f_predicting else bg_pred
     
             res_dict, res_ts_dict = {}, {}
-            x = self.create_mapping_facts(cur_bg_pred, line[3:], mode)
+            x = self.create_mapping_facts(cur_bg_pred, query[3:], mode)
             for rule_Len in rule_dict1.keys():
                 for r in rule_dict1[rule_Len]:
-                    if isinstance(selected_rules, dict):
-                        if not r['rule'] in selected_rules[rel_idx]:
-                            continue
+                    if isinstance(selected_rules, dict) and (not r['rule'] in selected_rules[rel_idx]):
+                        continue
                     if r['score'] < rule_score_bar[rule_Len]:
                         continue
 
-                    cur_dict, cur_walk = self.apply_single_rule(line[0], r['rule'], int(rule_Len), 
-                                                                x, f_print=0, return_walk=True)
+                    cur_dict, cur_walk = self.apply_single_rule(query[0], r['rule'], int(rule_Len), x, f_print=0, return_walk=True)
 
                     if self.f_Wc_ts:
-                        for w in cur_walk:
-                            if w[-1] not in res_ts_dict:
-                                res_ts_dict[w[-1]] = {}
-                            for l in range(int(rule_Len)):
-                                if r['rule'][l] not in res_ts_dict[w[-1]]:
-                                    res_ts_dict[w[-1]][r['rule'][l]] = []
-                                res_ts_dict[w[-1]][r['rule'][l]].append(w[3*l+1]-line[3])
+                        res_ts_dict = self.create_res_ts_dict(query, r, rule_Len, cur_walk, res_ts_dict)
 
                     for k in cur_dict.keys():
                         cur_dict[k] = cur_dict[k] * r['score']
@@ -894,9 +900,9 @@ class TILP(object):
                 for i in range(self.num_entites):
                     res_dict[i] = np.random.normal(loc=0.0, scale=0.01, size=None)
 
-            res_tfm_score = self.predict_tfm_score_with_fact_check(line, bg_pred, train_edges, res_dict, dist_pars, assiting_data, format_extra_len)
+            res_tfm_score = self.predict_tfm_score_with_fact_check(query, bg_pred, train_edges, res_dict, dist_pars, assiting_data, format_extra_len)
 
-            rank = self.evaluate_res_dict(res_dict, line[2], line, train_edges, res_tfm_score, tol_gap)
+            rank = self.evaluate_res_dict(res_dict, query[2], query, train_edges, res_tfm_score, tol_gap)
             rank_dict[idx+s] = rank
 
         return rank_dict
@@ -966,9 +972,8 @@ class TILP(object):
 
 
 
-
     def predict_tfm_score_with_fact_check(self, query, bg_pred, facts, res_dict, dist_pars, assiting_data, format_extra_len=0):
-
+        f_check_enable = [0, 0.5, 1][0] # whether enable
         res_mat = np.zeros((self.num_entites,1))
 
         if len(dist_pars) > 0:
@@ -991,62 +996,65 @@ class TILP(object):
                 if self.f_Wc_ts:
                     res_mat[cand, 0] += 0.05* TRL_total_score *self.predict_tfm_Wc_score(query[1], res_dict[cand], 
                                                         p_order_Wc, mu_pair_Wc, sigma_pair_Wc, lambda_pair_Wc)
-
-
-        f_check_enable = [0, 0.5, 1][0] # whether enable
-
-        if self.dataset_using in ['wiki', 'YAGO']:
-            if self.dataset_using == 'wiki':
-                ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
-            else:
-                ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
-
-            if f_check_enable > 0:
-                if f_check_enable == 1:
-                    res_mat_exp = res_mat - 1
-                    if self.dataset_using == 'wiki':
-                        res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                        if not query[1] in [17, 20]:
-                            res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1                        
-                    else:                        
-                        if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
-                            res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
-                        res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
-                    res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
-
-                if self.dataset_using == 'wiki':
-                    if query[1] in Gauss_int_dict.keys():
-                        x = query[3] - ent_int_mat[:, 0]
-                        y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                        res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
-                else:
-                    rel_once = [10, 17]
-                    if query[1] in rel_once:
-                        res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
-
-                    if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                        res_mat[ent_prop_mat[:,0] == -1] -= 1
-                    elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
-                        res_mat[ent_prop_mat[:,0] == 1] -= 1
-
-                    if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
-                        y = facts[facts[:, 1]==query[1], 3:]
-                        z = facts[facts[:, 1]==query[1], 2:3]
-                        y = self.obtain_tmp_rel(y, query[3:]).reshape((-1,1))
-                        res_mat[z[y==0]] -= 0.1
-
-                    if f_check_enable == 1:
-                        if query[1] in Gauss_int_dict.keys():
-                            if query[1] != 17:
-                                x = query[3] - ent_int_mat[:, 0]
-                                y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
-                            else:
-                                x = query[3] - ent_int_mat[:, 1]
-                                y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
-                            res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
-
+        
+        res_mat = self.fact_check(f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=format_extra_len)
         return res_mat
 
+
+
+    def fact_check(self, f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=0):
+        assert self.dataset_using in ['wiki', 'YAGO']
+        
+        if self.dataset_using == 'wiki':
+            ent_int_mat, ent_int_valid_mat, Gauss_int_dict = assiting_data
+        else:
+            ent_int_mat, ent_int_valid_mat, Gauss_int_dict, query_prop_dict, ent_prop_mat = assiting_data
+
+        if f_check_enable > 0:
+            if f_check_enable == 1:
+                res_mat_exp = res_mat - 1
+                if self.dataset_using == 'wiki':
+                    res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                    if not query[1] in [17, 20]:
+                        res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1                        
+                else:                        
+                    if not (query[3]<1000*(10**format_extra_len) and query[4]>1000*(10**format_extra_len)):
+                        res_mat[(ent_int_mat[:, 0] - 15*(10**format_extra_len) > query[3]) & (ent_int_valid_mat[:, 0] == 1)] -= 1
+                    res_mat[(ent_int_mat[:, 1] + 10*(10**format_extra_len) < query[4]) & (ent_int_valid_mat[:, 1] == 1)] -= 1
+                res_mat = np.max(np.hstack((res_mat_exp, res_mat)), axis=1).reshape((-1,1))
+
+            if self.dataset_using == 'wiki':
+                if query[1] in Gauss_int_dict.keys():
+                    x = query[3] - ent_int_mat[:, 0]
+                    y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                    res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+            else:
+                rel_once = [10, 17]
+                if query[1] in rel_once:
+                    res_mat[facts[facts[:,1] == query[1]][:,2]] -= 1
+
+                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                    res_mat[ent_prop_mat[:,0] == -1] -= 1
+                elif query[1] in query_prop_dict['p2n'] + query_prop_dict['u2n']:
+                    res_mat[ent_prop_mat[:,0] == 1] -= 1
+
+                if query[1] in query_prop_dict['p2p'] + query_prop_dict['n2p']:
+                    y = facts[facts[:, 1]==query[1], 3:]
+                    z = facts[facts[:, 1]==query[1], 2:3]
+                    y = self.obtain_tmp_rel(y, query[3:]).reshape((-1,1))
+                    res_mat[z[y==0]] -= 0.1
+
+                if f_check_enable == 1:
+                    if query[1] in Gauss_int_dict.keys():
+                        if query[1] != 17:
+                            x = query[3] - ent_int_mat[:, 0]
+                            y = norm(Gauss_int_dict[query[1]][0], Gauss_int_dict[query[1]][1]).pdf(x).reshape((-1,1))
+                        else:
+                            x = query[3] - ent_int_mat[:, 1]
+                            y = norm(Gauss_int_dict[10][0], Gauss_int_dict[10][1]).pdf(x).reshape((-1,1))
+                        res_mat[ent_int_valid_mat[:, 0] == 1] += 0.1*y[ent_int_valid_mat[:, 0] == 1]
+
+        return res_mat
 
 
 
@@ -1061,6 +1069,7 @@ class TILP(object):
     #         res_dict = self.my_merge_dict(res_dict, cur_dict)
 
     #     return res_dict
+
 
 
     def _random_uniform_unit(self, r, c):
@@ -1430,22 +1439,38 @@ class TILP(object):
         return x
 
 
+    def read_weight(self, rel_idx):
+        # calculate rule weights
+        cur_path = self.get_weights_savepath_v2(rel_idx)
+
+        if not os.path.exists(cur_path):
+            # print(cur_path + ' not found')
+            return None, None, None, None, None
+        
+        with open(cur_path, 'r') as f:
+            my_res = json.load(f)
+
+        var_prob_rel_ls = [np.squeeze(np.array(x), 2) for x in my_res['attn_rel_ls']]
+        var_prob_pattern_ls = [np.squeeze(np.array(x), 2) for x in my_res['attn_TR_ls']]
+        var_prob_pattern_prime_ls = [[]] + [np.squeeze(np.array(x), 2) for x in my_res['attn_TR_prime_ls'][1:]] if self.f_non_Markovian else []
+        var_prob_ruleLen = np.array(my_res['attn_ruleLen'])
+
+        return var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res
+
+
+    def calculate_rule_score_from_res(self, rule, rule_Len, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res):
+        s = self.calculate_rule_score(rule, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
+                                                    var_prob_pattern_prime_ls, var_prob_ruleLen)
+        s *= (1-self.gamma_shallow)
+        s += (self.gamma_shallow) * my_res['shallow_score'][my_res['shallow_rule_dict'].index(rule)] if rule in my_res['shallow_rule_dict'] else 0
+        return s
+
+
     def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, const_pattern_ls, cal_score=False, select_topK_rules=True):
         if cal_score:
-            # calculate rule weights
-            cur_path = self.get_weights_savepath_v2(rel_idx)
-
-            if not os.path.exists(cur_path):
-                # print(cur_path + ' not found')
+            var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res = self.read_weight(rel_idx)
+            if my_res is None:
                 return
-            with open(cur_path, 'r') as f:
-                my_res = json.load(f)
-
-            var_prob_rel_ls = [np.squeeze(np.array(x), 2) for x in my_res['attn_rel_ls']]
-            var_prob_pattern_ls = [np.squeeze(np.array(x), 2) for x in my_res['attn_TR_ls']]
-            var_prob_pattern_prime_ls = [[]] + [np.squeeze(np.array(x), 2) for x in my_res['attn_TR_prime_ls'][1:]] if self.f_non_Markovian else []
-            var_prob_ruleLen = np.array(my_res['attn_ruleLen'])
-
 
         rule_dict1 = {}
         for rule_Len in rule_dict.keys():
@@ -1453,12 +1478,8 @@ class TILP(object):
             for r in rule_dict[rule_Len]:
                 r = r.tolist()
                 cur_rule_dict = {'rule': r, 'sup_num': rule_sup_num_dict[str(r)]}
-
                 if cal_score:
-                    s = self.calculate_rule_score(r, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
-                                                    var_prob_pattern_prime_ls, var_prob_ruleLen)
-                    s *= (1-self.gamma_shallow)
-                    s += (self.gamma_shallow) * my_res['shallow_score'][my_res['shallow_rule_dict'].index(r)] if r in my_res['shallow_rule_dict'] else 0
+                    s = self.calculate_rule_score_from_res(r, rule_Len, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res)
                     cur_rule_dict['score'] = s
 
                 rule_dict1[rule_Len].append(cur_rule_dict)
@@ -1466,103 +1487,99 @@ class TILP(object):
             if select_topK_rules:
                 rule_dict1[rule_Len] = sorted(rule_dict1[rule_Len], key=lambda x: x['sup_num'], reverse=True)[:self.max_rulenum[int(rule_Len)]]
 
-
-        if self.overall_mode == 'general':
-            with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','w') as f:
-                json.dump(rule_dict1, f)
-        elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-            with open('../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','w') as f:
-                json.dump(rule_dict1, f)
-
+        path = '../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json' if self.overall_mode == 'general' else\
+               '../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
+        
+        with open(path, 'w') as f:
+            json.dump(rule_dict1, f)
+        
         return 
 
 
+
     def create_all_rule_dicts(self, rel_idx, train_edges, query_idx=None, pos_examples_idx=None):
-        rule_dict = {}
-        rule_sup_num_dict = {}
+        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
+        
+        rule_dict, rule_sup_num_dict = {}, {}
         cnt = 0
 
         idx_ls = range(len(train_edges))
-
-        if not query_idx:
-            query_idx = range(len(train_edges))
+        query_idx = range(len(train_edges)) if query_idx is None else query_idx
 
         for idx1 in query_idx:
             idx = idx_ls[idx1]
-            if isinstance(pos_examples_idx, list) and idx not in pos_examples_idx:
+            if isinstance(pos_examples_idx, list) and (idx not in pos_examples_idx):
                 continue
-            if train_edges[idx][1] == rel_idx:
-                if self.overall_mode == 'general':
-                    path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-                elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                    path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            if train_edges[idx][1] != rel_idx:
+                continue
+            
+            path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else\
+                   '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
-                if not os.path.exists(path):
-                    # print(path + ' not found')
+            if not os.path.exists(path):
+                # print(path + ' not found')
+                continue
+
+            with open(path, 'r') as f:
+                data = json.load(f)
+
+            cnt += 1
+            for k in data.keys():
+                if int(k) > self.max_explore_len:
                     continue
-                with open(path, 'r') as f:
-                    x = json.load(f)
-                cnt += 1
-                for k in x.keys():
-                    if int(k)<=self.max_explore_len:
-                        if len(x[k]) >1:
-                            cur_rule_mat = np.vstack([r['rule'] for r in x[k]])
-                        else:
-                            cur_rule_mat = np.array([r['rule'] for r in x[k]])
-                        cur_rule_mat = np.unique(cur_rule_mat, axis=0)
 
-                        rule_sup_num_dict = self.my_merge_dict(rule_sup_num_dict, dict(Counter([str(r['rule']) for r in x[k]])))
+                cur_rule_mat = np.vstack([r['rule'] for r in data[k]]) if len(data[k]) >1 else np.array([r['rule'] for r in data[k]])
+                cur_rule_mat = np.unique(cur_rule_mat, axis=0)
 
-                        if k not in rule_dict.keys():
-                            rule_dict[k] = cur_rule_mat.copy()
-                        else:
-                            rule_dict[k] = np.vstack((rule_dict[k], cur_rule_mat))
-                        rule_dict[k] = np.unique(rule_dict[k], axis=0)
+                rule_dict[k] = cur_rule_mat.copy() if k not in rule_dict.keys() else np.vstack((rule_dict[k], cur_rule_mat))
+                rule_dict[k] = np.unique(rule_dict[k], axis=0)
+
+                rule_sup_num_dict = self.my_merge_dict(rule_sup_num_dict, dict(Counter([str(r['rule']) for r in data[k]])))
 
         return rule_dict, rule_sup_num_dict
 
 
 
-    def create_rule_supplement(self, rel_idx, train_edges, query_idx=None):
-        with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
-            rule_dict1 = json.load(f)
+    # def create_rule_supplement(self, rel_idx, train_edges, query_idx=None):
+    #     with open('../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json','r') as f:
+    #         rule_dict1 = json.load(f)
 
-        with open('../output/'+ self.dataset_using +'_contri_dict_'+str(rel_idx)+'.json','r') as f:
-            contri_dict = json.load(f)
+    #     with open('../output/'+ self.dataset_using +'_contri_dict_'+str(rel_idx)+'.json','r') as f:
+    #         contri_dict = json.load(f)
 
-        if not query_idx:
-            query_idx = range(len(train_edges))
+    #     if not query_idx:
+    #         query_idx = range(len(train_edges))
 
-        rule_sup = {}
-        for rule_Len in rule_dict1.keys():
-            if int(rule_Len)>1:
-                for r in rule_dict1[rule_Len]:
-                        res_dict = {}
-                        for idx in query_idx:
-                            if train_edges[idx][1] == rel_idx:
-                                line = train_edges[idx]
-                                with open('../output/found_rules/'+ self.dataset_using \
-                                                    +'_train_query_'+str(idx)+'.json', 'r') as f:
-                                    v = json.load(f)
-                                if rule_Len in v.keys():
-                                    cur_rules = [w['rule'] for w in v[rule_Len]]
-                                    # print(cur_rules)
-                                    if r['rule'] in cur_rules:
-                                        # print(line)
-                                        masked_facts = np.delete(train_edges, \
-                                                    [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
-                                        X = self.create_mapping_facts(masked_facts, line[3:], 1)
-                                        x = np.unique(X[:,:4], axis=0)
-                                        _, rule_walks = self.apply_single_rule(line[0], line[3:], r['rule'], int(rule_Len),
-                                                                                            x, return_walk=1)
-                                        rule_walks = self.obtain_sp_rule_walks(rule_walks, r['rule'], int(rule_Len), X)
-                                        # print(rule_walks)
-                                        y = rule_walks[rule_walks[:,-1]==line[2],:-1].tolist()
-                                        cur_dict = dict(Counter([tuple(y1) for y1 in y]))
-                                        res_dict = self.my_merge_dict(res_dict, cur_dict)
+    #     rule_sup = {}
+    #     for rule_Len in rule_dict1.keys():
+    #         if int(rule_Len)>1:
+    #             for r in rule_dict1[rule_Len]:
+    #                 res_dict = {}
+    #                 for idx in query_idx:
+    #                     if train_edges[idx][1] == rel_idx:
+    #                         line = train_edges[idx]
+    #                         with open('../output/found_rules/'+ self.dataset_using \
+    #                                             +'_train_query_'+str(idx)+'.json', 'r') as f:
+    #                             v = json.load(f)
+    #                         if rule_Len in v.keys():
+    #                             cur_rules = [w['rule'] for w in v[rule_Len]]
+    #                             # print(cur_rules)
+    #                             if r['rule'] in cur_rules:
+    #                                 # print(line)
+    #                                 masked_facts = np.delete(train_edges, \
+    #                                             [idx, self.get_inv_idx(len(train_edges)//2, idx)], 0)
+    #                                 X = self.create_mapping_facts(masked_facts, line[3:], 1)
+    #                                 x = np.unique(X[:,:4], axis=0)
+    #                                 _, rule_walks = self.apply_single_rule(line[0], line[3:], r['rule'], int(rule_Len),
+    #                                                                                     x, return_walk=1)
+    #                                 rule_walks = self.obtain_sp_rule_walks(rule_walks, r['rule'], int(rule_Len), X)
+    #                                 # print(rule_walks)
+    #                                 y = rule_walks[rule_walks[:,-1]==line[2],:-1].tolist()
+    #                                 cur_dict = dict(Counter([tuple(y1) for y1 in y]))
+    #                                 res_dict = self.my_merge_dict(res_dict, cur_dict)
 
-                        rule_sup[str(r['rule'])] = res_dict
-        return rule_sup
+    #                     rule_sup[str(r['rule'])] = res_dict
+    #     return rule_sup
 
 
     def create_training_idx_in_batch(self, i, num_queries, num_processes, rel_idx, train_edges):
@@ -1734,6 +1751,7 @@ class TILP(object):
         rule_walks = df_edges[0]
         df_edges[0] = df_edges[0][0:0]
 
+        idx_TR_ls = 0
         for i in range(1, len(df_edges)):
             rule_walks = pd.merge(rule_walks, df_edges[i], on=["entity_" + str(i)])
             rule_walks = self.remove_matching_rows(rule_walks) # remove path that contains repeated edges 
@@ -1756,7 +1774,17 @@ class TILP(object):
                     #     preserve_list_row = [1] * i + [0, 0, 1, 0, 0, 1] # remove the last time information
                     # mask_row = pd.Series(preserve_list_row, index=rule_walks.columns).astype(bool)
                     # rule_walks = rule_walks.loc[:, mask_row]
-                    
+                else:
+                    # remove path that does not satisfy the TR constraint
+                    rule_walks_np = rule_walks.to_numpy()
+                    idx_ed = 4*i + 2
+                    for j in range(i):
+                        idx_st = 4*j + 2
+                        cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
+                        mask = pd.Series(cur_TR == rule[rule_Len*2 + idx_TR_ls])
+                        idx_TR_ls += 1
+                        rule_walks = rule_walks[mask]
+
             df_edges[i] = df_edges[i][0:0]
         
         return rule_walks
@@ -1934,20 +1962,20 @@ class TILP(object):
         return merged_dict
 
 
-    def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, TR_ls_len):
+
+    def data_collection(self, idx_ls):
         '''
         If we process multiple samples at one time, the problem is that A can vote 10 times if it has 10 rules but B can only vote 5 times if it has 5 rules.
         We can process each sample separately but it is time-consuming.
         Instead, we merge the rule dict and calculate the average alpha.
         '''
+        assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
         idx_ls = [idx_ls] if not isinstance(idx_ls, list) else idx_ls
 
         rules_dict, shallow_rules_dict = {}, {}
         for idx in idx_ls:
-            if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
-            elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else \
+                   '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
             # print(path)
 
             if not os.path.exists(path):
@@ -1958,14 +1986,13 @@ class TILP(object):
                     cur_rules_dict = json.load(f)
 
             for rule_len in cur_rules_dict.keys():
-                if rule_len not in rules_dict.keys():
-                    rules_dict[rule_len] = []
+                rules_dict[rule_len] = [] if rule_len not in rules_dict.keys() else rules_dict[rule_len]
                 rules_dict[rule_len] += cur_rules_dict[rule_len]
 
-                if rule_len not in shallow_rules_dict.keys():
-                    shallow_rules_dict[rule_len] = []
-
-                alpha_dict = self.merge_rules(cur_rules_dict[rule_len], [1] * (2*int(rule_len) + int(rule_len)*(int(rule_len)-1)/2))
+                mask_pre = [1] * (2*int(rule_len) + int(rule_len>1)) if self.f_adjacent_TR_only else [1] * (2*int(rule_len) + int(rule_len)*(int(rule_len)-1)/2)
+                alpha_dict = self.merge_rules(cur_rules_dict[rule_len], mask_pre)
+                # print(alpha_dict)
+                shallow_rules_dict[rule_len] = [] if rule_len not in shallow_rules_dict.keys() else shallow_rules_dict[rule_len]
                 shallow_rules_dict[rule_len] += [{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict]
         
         for rule_len in rules_dict:
@@ -1975,7 +2002,13 @@ class TILP(object):
             shallow_rules_dict[rule_len] = self.merge_dicts(shallow_rules_dict[rule_len], len(idx_ls))
             shallow_rules_dict[rule_len] = [{'rule': list(key), 'alpha': value} for key, value in shallow_rules_dict[rule_len].items()]
 
-    
+        return rules_dict, shallow_rules_dict
+
+
+
+    def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, TR_ls_len):
+        rules_dict, shallow_rules_dict = self.data_collection(idx_ls)
+        
         input_dict = {}
         f_valid = 0
         shallow_rule_idx, shallow_rule_alpha = np.zeros((1, self.shallow_score_length)), np.zeros((1, self.shallow_score_length))
