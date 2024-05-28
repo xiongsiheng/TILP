@@ -150,7 +150,7 @@ class Walker(gadgets):
                 if time_shift_mode in [-1, 1] and time_shift_mode in r[int(num):int(num) + 2]:
                     continue
                 # print(r)
-                # we also consider randomly selecting rules for alpha calculation
+                # we also consider randomly selecting samples for alpha calculation
                 rand_num = random.random()
                 if rand_num <= self.prob_cal_alpha:
                     cur_dict = self.apply_single_rule(query[0], r, int(num), masked_facts_with_TR)
