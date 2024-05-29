@@ -107,14 +107,14 @@ class Walker(gadgets):
                     # rule_walks = rule_walks.loc[:, mask_row]
                 else:
                     # remove path that does not satisfy the TR constraint
-                    rule_walks_np = rule_walks.to_numpy()
-                    idx_ed = 4*i + 2
                     for j in range(i):
-                        idx_st = 4*j + 2
+                        idx_st, idx_ed = 4*j + 2, 4*i + 2
+                        rule_walks_np = rule_walks.to_numpy()
                         cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
                         mask = pd.Series(cur_TR == rule[rule_Len*2 + idx_TR_ls])
                         idx_TR_ls += 1
-                        rule_walks = rule_walks[mask]
+                        rule_walks = rule_walks[mask].reset_index(drop=True)
+                        
 
             df_edges[i] = df_edges[i][0:0]
         
@@ -125,7 +125,7 @@ class Walker(gadgets):
         '''
         Different TR setting:
         f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
-        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
+        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), TR(I_2, I_3), TR(I_1, I_4), ..., TR(I_{N-1}, I_N)
         f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
         '''
         rule_dict = {}
@@ -159,13 +159,13 @@ class Walker(gadgets):
                     rules = np.hstack((rules, cur_TR))
 
                 if self.f_non_Markovian:
-                    # TR(I_i, I_j)
-                    for i in range(num-1):
-                        for j in range(i+1, num):
-                            if self.f_adjacent_TR_only and j != i + 1:
-                                # instead of considering all TR, we preserve adjacent TR: TR(I_i, I_i+1)
+                    # TR(I_j, I_i)
+                    for i in range(1, num):
+                        for j in range(i):
+                            if self.f_adjacent_TR_only and j != i - 1:
+                                # instead of considering all TR, we preserve adjacent TR: TR(I_{i-1}, I_i)
                                 continue
-                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*i+2:4*i+4], cur_ent_walk_res[:, 4*j+2:4*j+4]).reshape((-1,1))
+                            cur_TR = self.obtain_tmp_rel(cur_ent_walk_res[:, 4*j+2:4*j+4], cur_ent_walk_res[:, 4*i+2:4*i+4]).reshape((-1,1))
                             rules = np.hstack((rules, cur_TR))
                 
                 rules = np.unique(rules, axis=0).tolist()
@@ -212,7 +212,7 @@ class Walker(gadgets):
                                 f_print=0, return_walk=False, targ_node=None, 
                                 return_edges=False):
         rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
-        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), ...] if only adjacent TRs are considered else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), ...]
+        TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3) ...] if adjacent TRs only else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3) ...]
 
         path_ls = []
         cur_nodes = [int(start_node)]
@@ -277,6 +277,7 @@ class Walker(gadgets):
         TR = self.obtain_tmp_rel(masked_facts[:, 3:], query[3:]).reshape((-1,1))
         masked_facts_with_TR = np.hstack((masked_facts[:, :3], TR)) if not self.f_non_Markovian else np.hstack((masked_facts[:, :3], TR, masked_facts[:, 3:]))
         masked_facts_with_TR = np.unique(masked_facts_with_TR, axis=0)                
+
 
         for num in rule_dict_loaded:
             rules = [r_dict['rule'] for r_dict in rule_dict_loaded[num]]
@@ -359,7 +360,6 @@ class Walker(gadgets):
         self.apply(train_edges, rel_idx, queries_idx, pos_examples_idx, time_shift_mode, mode=mode)
 
         return
-
 
 
 
@@ -658,9 +658,9 @@ class Trainer(gadgets):
 
             if self.f_non_Markovian:
                 cur_attn_TR_prime_ls = []
-                for j in range(i-1):
-                    for k in range(j+1,i):
-                        if self.f_adjacent_TR_only and k != j+1:
+                for j in range(1, i):
+                    for k in range(j):
+                        if self.f_adjacent_TR_only and k != j-1:
                             # for f_adjacent_TR_only, we do not create the variables
                             continue
                         x = tf.stack([rnn_outputs[j], rnn_outputs[k]], axis=1)

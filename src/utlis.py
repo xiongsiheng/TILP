@@ -42,11 +42,11 @@ class TILP(object):
         '''
         Different TR setting:
         f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
-        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), ..., TR(I_{N-1}, I_N)
+        f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), TR(I_2, I_3), TR(I_1, I_4), ..., TR(I_{N-1}, I_N)
         f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
         '''
         self.f_non_Markovian = True # consider non-Markovian constraints
-        self.f_adjacent_TR_only = True # consider adjacent TRs only
+        self.f_adjacent_TR_only = False # consider adjacent TRs only
 
         self.f_Wc_ts = False # consider intermediate nodes for temporal feature modeling
         self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
@@ -286,6 +286,7 @@ class gadgets(TILP):
             merged_dict[tuple(d['rule'])].append(d['alpha'])
         merged_dict = dict(merged_dict)
         for rule in merged_dict:
+            # print(merged_dict[rule], num_samples)
             merged_dict[rule] = np.mean(merged_dict[rule] + [0] * (num_samples - len(merged_dict[rule])))
         return merged_dict
 
