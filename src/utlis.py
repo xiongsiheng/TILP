@@ -7,9 +7,6 @@ import pandas as pd
 import copy
 from collections import Counter
 from scipy.stats import norm
-
-import tensorflow as tf
-from tqdm import tqdm
 from collections import defaultdict
 
 
@@ -86,15 +83,13 @@ class gadgets(TILP):
 
         return output
 
-    def find_common_nodes(self, ls1, ls2):
-        return [list(set(ls1[i]).intersection(set(ls2[i]))) for i in range(len(ls1))]
-
 
     def obtain_tmp_rel(self, int1, int2, tol_gap=[0, 0]):
         if len(int2.shape) == 1:
             return ((int1[:, 1] <= int2[0] - tol_gap[0]) & (int1[:, 0] <= int2[0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[1] + tol_gap[1]) & (int1[:, 1] >= int2[1] + tol_gap[1]))*1
         else:
             return ((int1[:, 1] <= int2[:,0] - tol_gap[0]) & (int1[:, 0] <= int2[:,0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[:,1] + tol_gap[1]) & (int1[:, 1] >= int2[:,1] + tol_gap[1]))*1
+
 
     def print_dict(self, dict1):
         print('start')
@@ -162,6 +157,11 @@ class gadgets(TILP):
         
         return df_filtered
 
+
+    def find_common_nodes(self, ls1, ls2):
+        return [list(set(ls1[i]).intersection(set(ls2[i]))) for i in range(len(ls1))]
+
+
     def get_inv_idx(self, num_dataset, idx):
         if isinstance(idx, int):
             return idx - num_dataset if idx >= num_dataset else idx + num_dataset
@@ -227,6 +227,7 @@ class gadgets(TILP):
         tmp_rel = self.obtain_tmp_rel(edges[x, 3:], query_int)
         # print(edges[x,:])
         return rel, tmp_rel + 1
+
 
     def obtain_query_inv(self, query):
         x = int(self.num_rel/2)
@@ -332,6 +333,7 @@ class gadgets(TILP):
         return rules_dict, shallow_rules_dict
 
 
+
     def create_training_idx_in_batch(self, i, num_queries, num_processes, rel_idx, train_edges):
         if rel_idx < self.num_rel//2:
             s = 0
@@ -380,69 +382,6 @@ class gadgets(TILP):
                 cur_path = self.get_weights_savepath_v2(rel_idx)
                 with open(cur_path, 'w') as f:
                     json.dump(my_res, f)
-
-
-    # def generate_input_dict_v2(self, rel_idx, ruleLen, train_edges):
-    #     num_paths_max, num_path_sampling = 20, 5
-    #     cur_num_paths = min(num_paths_max, self.num_paths_dict[rel_idx][ruleLen])
-
-    #     input_dict_ls = []
-    #     for (i, query) in enumerate(train_edges):
-    #         if query[1] == rel_idx:
-    #             cur_idx_inv = self.get_inv_idx(int(len(train_edges)/2), i)
-
-    #             cur_file_path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(i)+'.json'
-    #             cur_file_path_inv = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(cur_idx_inv)+'.json'
-
-    #             if os.path.exists(cur_file_path) or os.path.exists(cur_file_path_inv):
-    #                 if os.path.exists(cur_file_path):
-    #                     with open(cur_file_path) as f:
-    #                         ent_walk_res = np.array(json.load(f))
-    #                 else:
-    #                     with open(cur_file_path_inv) as f:
-    #                         ent_walk_res = np.array(json.load(f))[:,::-1]
-
-    #                 if ent_walk_res.shape[1] -1 == ruleLen:
-    #                     print(ent_walk_res)
-    #                     masked_facts = np.delete(train_edges, [i, cur_idx_inv], 0)
-    #                     query_int = query[3:]
-
-    #                     ent_walk_res_ls = []
-    #                     if ent_walk_res.shape[0]>cur_num_paths:
-    #                         for m in range(num_path_sampling):
-    #                             np.random.shuffle(ent_walk_res)
-    #                             ent_walk_res_ls.append(ent_walk_res[:cur_num_paths,:])
-    #                     else:
-    #                         ent_walk_res_ls.append(ent_walk_res)
-
-    #                     cur_input_dicts = []
-    #                     for cur_walk_mat in ent_walk_res_ls:
-    #                         cur_input_dict = {'rel_dict': {}, 'tmp_rel_dict': {}}
-    #                         cur_mask = []
-    #                         for l in range(cur_num_paths):
-    #                             cur_input_dict['rel_dict'][l] = {}
-    #                             cur_input_dict['tmp_rel_dict'][l] = {}
-
-    #                             if l<cur_walk_mat.shape[0]:
-    #                                 cur_mask.append(0)
-    #                                 for k in range(ruleLen):
-    #                                     rel, tmp_rel = self.obtain_edges_given_nodes(masked_facts, cur_walk_mat[l,k], cur_walk_mat[l,k+1], query_int)
-    #                                     cur_input_dict['rel_dict'][l][k] = rel
-    #                                     cur_input_dict['tmp_rel_dict'][l][k] = tmp_rel
-    #                             else:
-    #                                 cur_mask.append(-1000)
-    #                                 for k in range(ruleLen):
-    #                                     cur_input_dict['rel_dict'][l][k] = [0]
-    #                                     cur_input_dict['tmp_rel_dict'][l][k] = [0]
-    #                         cur_input_dict['mask'] = cur_mask
-    #                         cur_input_dicts.append(cur_input_dict)
-
-    #                     input_dict_ls.append(cur_input_dicts)
-
-    #                     if len(input_dict_ls)>self.num_train_samples_max:
-    #                         break
-
-    #     return input_dict_ls
 
 
     def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, TR_ls_len):
@@ -742,3 +681,67 @@ class gadgets(TILP):
         input_dict['mask'] = np.array(mask)
 
         return input_dict
+
+
+
+    # def generate_input_dict_v2(self, rel_idx, ruleLen, train_edges):
+    #     num_paths_max, num_path_sampling = 20, 5
+    #     cur_num_paths = min(num_paths_max, self.num_paths_dict[rel_idx][ruleLen])
+
+    #     input_dict_ls = []
+    #     for (i, query) in enumerate(train_edges):
+    #         if query[1] == rel_idx:
+    #             cur_idx_inv = self.get_inv_idx(int(len(train_edges)/2), i)
+
+    #             cur_file_path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(i)+'.json'
+    #             cur_file_path_inv = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(cur_idx_inv)+'.json'
+
+    #             if os.path.exists(cur_file_path) or os.path.exists(cur_file_path_inv):
+    #                 if os.path.exists(cur_file_path):
+    #                     with open(cur_file_path) as f:
+    #                         ent_walk_res = np.array(json.load(f))
+    #                 else:
+    #                     with open(cur_file_path_inv) as f:
+    #                         ent_walk_res = np.array(json.load(f))[:,::-1]
+
+    #                 if ent_walk_res.shape[1] -1 == ruleLen:
+    #                     print(ent_walk_res)
+    #                     masked_facts = np.delete(train_edges, [i, cur_idx_inv], 0)
+    #                     query_int = query[3:]
+
+    #                     ent_walk_res_ls = []
+    #                     if ent_walk_res.shape[0]>cur_num_paths:
+    #                         for m in range(num_path_sampling):
+    #                             np.random.shuffle(ent_walk_res)
+    #                             ent_walk_res_ls.append(ent_walk_res[:cur_num_paths,:])
+    #                     else:
+    #                         ent_walk_res_ls.append(ent_walk_res)
+
+    #                     cur_input_dicts = []
+    #                     for cur_walk_mat in ent_walk_res_ls:
+    #                         cur_input_dict = {'rel_dict': {}, 'tmp_rel_dict': {}}
+    #                         cur_mask = []
+    #                         for l in range(cur_num_paths):
+    #                             cur_input_dict['rel_dict'][l] = {}
+    #                             cur_input_dict['tmp_rel_dict'][l] = {}
+
+    #                             if l<cur_walk_mat.shape[0]:
+    #                                 cur_mask.append(0)
+    #                                 for k in range(ruleLen):
+    #                                     rel, tmp_rel = self.obtain_edges_given_nodes(masked_facts, cur_walk_mat[l,k], cur_walk_mat[l,k+1], query_int)
+    #                                     cur_input_dict['rel_dict'][l][k] = rel
+    #                                     cur_input_dict['tmp_rel_dict'][l][k] = tmp_rel
+    #                             else:
+    #                                 cur_mask.append(-1000)
+    #                                 for k in range(ruleLen):
+    #                                     cur_input_dict['rel_dict'][l][k] = [0]
+    #                                     cur_input_dict['tmp_rel_dict'][l][k] = [0]
+    #                         cur_input_dict['mask'] = cur_mask
+    #                         cur_input_dicts.append(cur_input_dict)
+
+    #                     input_dict_ls.append(cur_input_dicts)
+
+    #                     if len(input_dict_ls)>self.num_train_samples_max:
+    #                         break
+
+    #     return input_dict_ls
