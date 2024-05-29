@@ -20,12 +20,12 @@ class TILP(object):
 
         if self.dataset_using == 'wiki':
             self.num_entites = 12554
-            self.prob_cal_alpha = 1  # do sampling when calculating arriving rate for training
+            self.prob_cal_alpha = 1  # if less than 1, do sampling when calculating arriving rate for training
         elif self.dataset_using == 'YAGO':
             self.num_entites = 10623
             self.prob_cal_alpha = 1
 
-        self.num_train_samples_max = 100000
+        self.num_train_samples_max = 100000  # max number of training samples
         self.batch_size = 128
         self.num_epoch_min = 10
         self.save_weights = True
@@ -49,11 +49,11 @@ class TILP(object):
         self.f_adjacent_TR_only = False # consider adjacent TRs only
 
         self.f_Wc_ts = False # consider intermediate nodes for temporal feature modeling
-        self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200}
+        self.max_rulenum = {1: 20, 2: 50, 3: 100, 4: 100, 5: 200} # max number of rules for each rule length
 
         # add shallow layers to enhance expressiveness
-        self.gamma_shallow = 0.2
-        self.shallow_score_length = 400
+        self.gamma_shallow = 0.2 # weight for shallow score
+        self.shallow_score_length = 400 # max number of shallow rules
 
         if self.overall_mode == 'general':
             self.weights_savepath = '../output/train_weights/train_weights_' + self.dataset_using
@@ -64,9 +64,6 @@ class TILP(object):
 
 
 class gadgets(TILP):
-    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        super(gadgets, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
-
     def count_lists(self, input_list):
         # Convert each sublist to a tuple so they can be counted
         tuples_list = [tuple(sublist) for sublist in input_list]
@@ -85,6 +82,9 @@ class gadgets(TILP):
 
 
     def obtain_tmp_rel(self, int1, int2, tol_gap=[0, 0]):
+        '''
+        Obtain TR between two intervals (tolerance gap is considered).
+        '''
         if len(int2.shape) == 1:
             return ((int1[:, 1] <= int2[0] - tol_gap[0]) & (int1[:, 0] <= int2[0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[1] + tol_gap[1]) & (int1[:, 1] >= int2[1] + tol_gap[1]))*1
         else:
