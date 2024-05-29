@@ -238,6 +238,9 @@ class gadgets(TILP):
 
 
     def collect_rules(self, idx_ls, rel_idx):
+        '''
+        Collect rules for shallow layers.
+        '''
         if not isinstance(idx_ls, list):
             idx_ls = [idx_ls]
 
@@ -270,6 +273,9 @@ class gadgets(TILP):
 
 
     def merge_rules(self, rules_dict, mask_pre):
+        '''
+        When we merge rules, we consider masking them (ignore certain features in the rules).
+        '''
         # mask_pre: [1, 1, 1, 0, 0, ...] decide which notations to preserve
         alpha_dict = {}
         for r in rules_dict:
@@ -294,7 +300,7 @@ class gadgets(TILP):
 
     def data_collection(self, idx_ls):
         '''
-        If we process multiple samples at one time, the problem is that A can vote 10 times if it has 10 rules but B can only vote 5 times if it has 5 rules.
+        If we process multiple samples at one time, the problem is that samples with more rules have more voting opportunities.
         We can process each sample separately but it is time-consuming.
         Instead, we merge the rule dict and calculate the average alpha.
         '''

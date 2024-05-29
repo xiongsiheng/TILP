@@ -10,7 +10,6 @@ from scipy.stats import norm
 
 import tensorflow as tf
 from tqdm import tqdm
-from collections import defaultdict
 
 from utlis import gadgets
 
@@ -18,11 +17,17 @@ from utlis import gadgets
 
 
 class Walker(gadgets):
-    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        super(Walker, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+    def create_adj_mat(self, facts):
+        '''
+        Create simplified adjacency matrix (whether there is an edge between two nodes).
+        
+        Parameters:
+           facts: edges in KG
 
-    def create_adj_mat(self, masked_facts):
-        edges_simp = masked_facts[:,[0,2]]
+        Returns:
+           adj_mat: simplified adjacency matrix
+        '''
+        edges_simp = facts[:,[0,2]]
         edges_simp = np.unique(edges_simp, axis=0)
         edges_simp = edges_simp.astype(int)
         pos = list(edges_simp)
@@ -33,13 +38,28 @@ class Walker(gadgets):
 
         return adj_mat
 
+
     def BFS_mat_ver2(self, st_node, adj_mat, num_nodes, targ_node, max_len):
+        '''
+        Given start node and targ node, perform breadth-first search as matrix multiplication.
+        
+        Parameters:
+           st_node: start node
+           adj_mat: simplified adjacency matrix
+           num_nodes: number of nodes in KG
+           targ_node: target node
+           max_len: maximum length of path
+           
+        Returns:
+           num_hops: length of path from start node to target node
+           nodes_ls: nodes we arrive at each hop
+        '''
         node_st = np.zeros((num_nodes, 1))
         node_st[int(st_node)] = 1
         res = node_st.copy()
 
 
-        new_nodes_ls =[[int(st_node)]]
+        nodes_ls =[[int(st_node)]]
         num_hops = []
         for i in range(max_len):
             res = np.dot(adj_mat, res)
@@ -50,15 +70,28 @@ class Walker(gadgets):
             # cur_new_idx_ls = list(set(idx_ls)-set(idx_ls_old))
             cur_new_idx_ls = idx_ls.copy()
             if len(cur_new_idx_ls) > 0:
-                new_nodes_ls.append(cur_new_idx_ls)
+                nodes_ls.append(cur_new_idx_ls)
 
             if res[int(targ_node)] == 1:
                 num_hops.append(i+1)
                 # res[targ_node] = 0
 
-        return num_hops, new_nodes_ls
+        return num_hops, nodes_ls
+
 
     def get_walks(self, walk_edges, columns, rule=None, rule_Len=0):
+        '''
+        Generate walks based on edges (if non-Markovian constraints exist, remove violated paths).
+        
+        Parameters:
+           walk_edges: edges in the walk
+           columns: heads for each column
+           rule: if not None, apply non-Markovian constraints
+           rule_Len: length of the rule
+           
+        Returns:
+           res_walks: walks that satisfy the rule 
+        '''
         df_edges = []
         df = pd.DataFrame(
             walk_edges[0],
@@ -79,54 +112,64 @@ class Walker(gadgets):
             df_edges.append(df)
             df = df[0:0]
 
-        rule_walks = df_edges[0]
+        res_walks = df_edges[0]
         df_edges[0] = df_edges[0][0:0]
 
         idx_TR_ls = 0
         for i in range(1, len(df_edges)):
-            rule_walks = pd.merge(rule_walks, df_edges[i], on=["entity_" + str(i)])
-            rule_walks = self.remove_matching_rows(rule_walks) # remove path that contains repeated edges 
+            res_walks = pd.merge(res_walks, df_edges[i], on=["entity_" + str(i)])
+            res_walks = self.remove_matching_rows(res_walks) # remove path that contains repeated edges 
             if (rule is not None) and (self.f_non_Markovian):
                 if self.f_adjacent_TR_only:
                     # remove path that does not satisfy the TR constraint
-                    rule_walks_np = rule_walks.to_numpy()
+                    res_walks_np = res_walks.to_numpy()
                     idx_st = 4*(i-1) + 2 # [s, r, t_s, t_e, o]
                     idx_ed = 4*i + 2
                     # # since we remove previous time information
                     # idx_st -= 2*(i-1)
                     # idx_ed -= 2*(i-1)
-                    cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
+                    cur_TR = self.obtain_tmp_rel(res_walks_np[:, idx_st:idx_st+2], res_walks_np[:, idx_ed:idx_ed+2])
                     mask = pd.Series(cur_TR == rule[rule_Len+i+1])
-                    rule_walks = rule_walks[mask]
+                    res_walks = res_walks[mask]
 
                     # remove previous time information (we cannot since we need to remove path that contains repeated edges)
                     # preserve_list_row = [1] * i + [0, 0, 1, 1, 1, 1]
                     # if i == len(df_edges)-1:
                     #     preserve_list_row = [1] * i + [0, 0, 1, 0, 0, 1] # remove the last time information
-                    # mask_row = pd.Series(preserve_list_row, index=rule_walks.columns).astype(bool)
-                    # rule_walks = rule_walks.loc[:, mask_row]
+                    # mask_row = pd.Series(preserve_list_row, index=res_walks.columns).astype(bool)
+                    # res_walks = res_walks.loc[:, mask_row]
                 else:
                     # remove path that does not satisfy the TR constraint
                     for j in range(i):
                         idx_st, idx_ed = 4*j + 2, 4*i + 2
-                        rule_walks_np = rule_walks.to_numpy()
-                        cur_TR = self.obtain_tmp_rel(rule_walks_np[:, idx_st:idx_st+2], rule_walks_np[:, idx_ed:idx_ed+2])
+                        res_walks_np = res_walks.to_numpy()
+                        cur_TR = self.obtain_tmp_rel(res_walks_np[:, idx_st:idx_st+2], res_walks_np[:, idx_ed:idx_ed+2])
                         mask = pd.Series(cur_TR == rule[rule_Len*2 + idx_TR_ls])
                         idx_TR_ls += 1
-                        rule_walks = rule_walks[mask].reset_index(drop=True)
+                        res_walks = res_walks[mask].reset_index(drop=True)
                         
 
             df_edges[i] = df_edges[i][0:0]
         
-        return rule_walks
+        return res_walks
 
 
     def path_search(self, masked_facts, query, time_shift_mode):
         '''
+        Given a query, find all paths from subject entity to object entity and lift them into rules.
+
         Different TR setting:
         f_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q)
         f_non_Markovian: TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3), TR(I_2, I_3), TR(I_1, I_4), ..., TR(I_{N-1}, I_N)
         f_non_Markovian and f_adjacent_TR_only: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ..., TR(I_{N-1}, I_N)
+        
+        Parameters:
+            masked_facts: masked edges in KG (w/o the query)
+            query
+            time_shift_mode: [-1 (train: past, test: future) , 0 (general), 1 (train: future, test: past)] 
+        
+        Returns:
+            rule_dict: all rules that satisfy the query
         '''
         rule_dict = {}
 
@@ -183,8 +226,20 @@ class Walker(gadgets):
         return rule_dict
 
 
-    def calculate_ts_dist(self, path2, masked_facts, query, time_shift_mode):        
-        # Todo: consider time shifting setting
+    def calculate_ts_dist(self, path2, masked_facts, query, time_shift_mode):
+        '''
+        Calculate the start time gap between the query and known facts and save the results.
+
+        Parameters:
+            path2: path to save the results
+            masked_facts: masked edges in KG (w/o the query)
+            query
+            time_shift_mode: [-1 (train: past, test: future) , 0 (general), 1 (train: future, test: past)]
+
+        Returns:
+            None
+        '''        
+        # Todo: consider difficult time shifting setting [-1, 1]
         t_s_dict = {}
         for k1 in range(self.num_rel):
             t_s_dict[k1] = []
@@ -211,6 +266,22 @@ class Walker(gadgets):
     def apply_single_rule(self, start_node, rule, rule_Len, facts, 
                                 f_print=0, return_walk=False, targ_node=None, 
                                 return_edges=False):
+        '''
+        Given a rule, find all paths that satisfy the rule.
+
+        Parameters:
+            start_node: start node
+            rule: rule
+            rule_Len: length of the rule
+            facts: edges in KG
+            f_print: whether to print the intermediate results
+            return_walk: whether to return the walks
+            targ_node: target node
+            return_edges: whether to return the edges
+            
+        Returns:
+            res: dict of the probability of each end node
+        '''
         rel_ls = rule[:rule_Len] # [r_1, r_2, ..., r_N]
         TR_ls = rule[rule_Len:]  # [TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3) ...] if adjacent TRs only else [TR(I_1, I_q), TR(I_2, I_q), ..., TR(I_N, I_q), TR(I_1, I_2), TR(I_1, I_3) ...]
 
@@ -261,6 +332,18 @@ class Walker(gadgets):
 
 
     def alpha_calculation(self, path1, masked_facts, query, time_shift_mode):
+        ''' 
+        Calculate alpha for all rules that satisfy the query.
+
+        Parameters:
+            path1: path for previous search results
+            masked_facts: masked edges in KG (w/o the query)
+            query
+            time_shift_mode: [-1 (train: past, test: future) , 0 (general), 1 (train: future, test: past)]
+
+        Returns:
+            rule_dict: all rules that satisfy the query and their alpha
+        '''
         rule_dict = {}
         if not os.path.exists(path1):
             return rule_dict
@@ -311,9 +394,20 @@ class Walker(gadgets):
 
     def apply(self, train_edges, rel_idx=None, idx_ls=None, pos_examples_idx=None, time_shift_mode=0, mode='path_search'):
         '''
-        mode: 'path_search' or 'alpha_calculation'
+        Find the rules from the training set in two modes: path_search or alpha_calculation
         1) path_search: given a query, find all paths that satisfy the query
         2) alpha_calculation: given a query, calculate alpha for all rules
+
+        Parameters:
+            train_edges: edges in the training set
+            rel_idx: if not None, only consider the queries with the specific relation
+            idx_ls: if not None, only consider the queries with the specific index
+            pos_examples_idx: if not None, only consider the queries with the specific index
+            time_shift_mode: [-1 (train: past, test: future) , 0 (general), 1 (train: future, test: past)]
+            mode: path_search or alpha_calculation
+
+        Returns:
+            None
         '''
         assert mode in ['path_search', 'alpha_calculation']
         assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
@@ -564,9 +658,6 @@ class Walker(gadgets):
 
 
 class Trainer(gadgets):
-    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        super(Trainer, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
-
     def _random_uniform_unit(self, r, c):
         bound = 6./ np.sqrt(c)
         init_matrix = np.random.uniform(-bound, bound, (r, c))
@@ -578,7 +669,7 @@ class Trainer(gadgets):
         self.queries = tf.placeholder(tf.int32, [self.rnn_batch_size, self.num_ruleLen])
         self.rnn_query_embedding_params_ls = []
         rnn_inputs_ls = []
-        for i in range(self.num_ruleLen+1):
+        for _ in range(self.num_ruleLen+1):
             query_embedding_params = tf.Variable(self._random_uniform_unit(
                                                           self.num_rel + 1,
                                                           self.rnn_query_embed_size), 
@@ -591,6 +682,15 @@ class Trainer(gadgets):
 
 
     def build_rnn_graph(self):
+        '''
+        Build the RNN graph for rule score learning.
+
+        Returns:
+            attn_rel_ls: attention weights for relations
+            attn_TR_ls: attention weights for Markovian TRs
+            attn_TR_prime_ls: attention weights for non_Markovian TRs
+            attn_ruleLen: attention weights for rule length
+        '''
         rnn_inputs_ls = self._build_rnn_input()
 
         self.rnn_inputs_ls = [[tf.reshape(q, [-1, self.rnn_query_embed_size]) 
@@ -642,8 +742,8 @@ class Trainer(gadgets):
         attn_ruleLen = tf.nn.softmax(tf.matmul(self.rnn_inputs_ls[0][0], self.W_Len) + self.b_Len)
         attn_rel_ls, attn_TR_ls, attn_TR_prime_ls  = [], [], []
 
-        for i in range(1,self.num_ruleLen+1):
-            rnn_outputs, final_state = tf.contrib.rnn.static_rnn(
+        for i in range(1, self.num_ruleLen+1):
+            rnn_outputs, _ = tf.contrib.rnn.static_rnn(
                                                     self.cell, 
                                                     self.rnn_inputs_ls[i],
                                                     initial_state=init_state)
@@ -675,6 +775,15 @@ class Trainer(gadgets):
 
 
     def build_inputs(self):
+        '''
+        Build the input placeholders for our framwork.
+
+        Returns:
+            rel_dict: dict of relation placeholders
+            TR_dict: dict of TR placeholders
+            alpha_dict: dict of alpha placeholders
+            TR_ls_len: list of TR lengths
+        '''
         rel_dict, TR_dict, alpha_dict = {}, {}, {}
 
         TR_ls_len = []
@@ -695,6 +804,21 @@ class Trainer(gadgets):
 
     def calculate_TRL_score(self, rel_dict, TR_dict, alpha_dict, var_attn_rel_ls, var_attn_TR_ls, 
                                 var_attn_ruleLen, var_attn_TR_prime_ls):
+        '''
+        Calculate the score for a batch of queries.
+
+        Parameters:
+            rel_dict: dict of relations in a bacth 
+            TR_dict: dict of TR in a batch
+            alpha_dict: dict of alpha in a batch
+            var_attn_rel_ls: attention weights for relations
+            var_attn_TR_ls: attention weights for Markovian TRs
+            var_attn_ruleLen: attention weights for rule length
+            var_attn_TR_prime_ls: attention weights for non-Markovian TRs
+
+        Returns:
+            score: the score for a batch of queries
+        '''
         score = tf.constant(0.)
         for l in range(self.max_explore_len):
             # l = rule_len - 1
@@ -721,6 +845,13 @@ class Trainer(gadgets):
 
 
     def calculate_shallow_score(self):
+        '''
+        Calculate the score for the shallow layers.
+
+        Returns:
+            score: the score for the shallow layers
+            attn_shallow_score: attention weights for the shallow layers
+        '''
         self.shallow_rule_idx = tf.placeholder(tf.float32, shape=(None, self.shallow_score_length))
         self.shallow_rule_alpha = tf.placeholder(tf.float32, shape=(None, self.shallow_score_length))
         self.shallow_score = tf.Variable(np.random.randn(
@@ -736,6 +867,22 @@ class Trainer(gadgets):
 
 
     def build_model(self, train_edges, targ_rel_ls):
+        '''
+        Build the model for training.
+
+        Parameters:
+            train_edges: edges in the training set
+            targ_rel_ls: target relations
+
+        Returns:
+            rel_dict: dict of relations in a bacth 
+            TR_dict: dict of TR in a batch
+            alpha_dict: dict of alpha in a batch
+            TR_ls_len: list of TR lengths
+            valid_train_idx: valid training indices
+            feed_list: list of placeholders
+            init: initialization    
+        '''
         var_attn_rel_ls, var_attn_TR_ls, var_attn_TR_prime_ls, var_attn_ruleLen = self.build_rnn_graph()
         rel_dict, TR_dict, alpha_dict, TR_ls_len = self.build_inputs()
 
@@ -773,6 +920,18 @@ class Trainer(gadgets):
 
 
     def TRL_model_training_v2(self, targ_rel_ls, num_epoch, train_edges, const_pattern_ls):
+        '''
+        Train the model for rule score learning.
+
+        Parameters:
+            targ_rel_ls: target relations
+            num_epoch: number of epochs
+            train_edges: edges in the training set
+            const_pattern_ls: notations for temporal relations
+
+        Returns:
+            loss_hist: history of loss
+        '''
         rel_dict, TR_dict, alpha_dict, TR_ls_len, valid_train_idx, feed_list, init = self.build_model(train_edges, targ_rel_ls)
         
         loss_hist = []
@@ -1222,11 +1381,21 @@ class Trainer(gadgets):
 
 
 
-class Collector(gadgets):
-    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        super(Collector, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
-    
+class Collector(gadgets):    
     def create_all_rule_dicts(self, rel_idx, train_edges, query_idx=None, pos_examples_idx=None):
+        '''
+        Create all rule dictionaries
+        
+        Parameters:
+            rel_idx: relation index
+            train_edges: edges in the training set
+            query_idx: query index
+            pos_examples_idx: positive examples index
+
+        Returns:
+            rule_dict: dictionary of rule
+            rule_sup_num_dict: dictionary of support number for each rule
+        '''
         assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
         
         rule_dict, rule_sup_num_dict = {}, {}
@@ -1267,7 +1436,21 @@ class Collector(gadgets):
 
         return rule_dict, rule_sup_num_dict
 
+
     def read_weight(self, rel_idx):
+        '''
+        Read the weights of the model
+
+        Parameters:
+            rel_idx: relation index
+        
+        Returns:
+            var_prob_rel_ls: probability of relations
+            var_prob_pattern_ls: probability of patterns
+            var_prob_pattern_prime_ls: probability of patterns in the non-Markovian setting
+            var_prob_ruleLen: probability of rule length
+            my_res: result
+        '''
         # calculate rule weights
         cur_path = self.get_weights_savepath_v2(rel_idx)
 
@@ -1287,6 +1470,21 @@ class Collector(gadgets):
 
 
     def calculate_rule_score(self, rule, ruleLen, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen):
+        '''
+        Calculate the score of a rule with variable weights
+
+        Parameters:
+            rule: rule
+            ruleLen: rule length
+            const_pattern_ls: notations for temporal relations
+            var_prob_rel_ls: probability of relations
+            var_prob_pattern_ls: probability of patterns
+            var_prob_pattern_prime_ls: probability of patterns in the non-Markovian setting
+            var_prob_ruleLen: probability of rule length
+
+        Returns:
+            prob: probability of the rule
+        '''
         rel_dict = rule[:ruleLen]
         tmp_rel_dict = rule[ruleLen:]
         tmp_rel_dict = [const_pattern_ls.index(TR) for TR in tmp_rel_dict]
@@ -1310,6 +1508,22 @@ class Collector(gadgets):
 
 
     def calculate_rule_score_from_res(self, rule, rule_Len, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res):
+        '''
+        Calculate the final score of a rule with shallow score
+
+        Parameters:
+            rule: rule
+            rule_Len: rule length
+            const_pattern_ls: notations for temporal relations
+            var_prob_rel_ls: probability of relations
+            var_prob_pattern_ls: probability of patterns
+            var_prob_pattern_prime_ls: probability of patterns in the non-Markovian setting
+            var_prob_ruleLen: probability of rule length
+            my_res: result
+
+        Returns:
+            s: score of the rule
+        '''
         s = self.calculate_rule_score(rule, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
                                                     var_prob_pattern_prime_ls, var_prob_ruleLen)
         s *= (1-self.gamma_shallow)
@@ -1318,6 +1532,20 @@ class Collector(gadgets):
 
 
     def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, const_pattern_ls, cal_score=False, select_topK_rules=True):
+        '''
+        Write all rule dictionaries to json files
+
+        Parameters:
+            rel_idx: relation index
+            rule_dict: dictionary of rule
+            rule_sup_num_dict: dictionary of support number for each rule
+            const_pattern_ls: notations for temporal relations
+            cal_score: whether calculate the score of the rules
+            select_topK_rules: whether select the top-K rules
+
+        Returns:
+            None
+        '''
         if cal_score:
             var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res = self.read_weight(rel_idx)
             if my_res is None:
@@ -1421,14 +1649,20 @@ class Collector(gadgets):
 
 
 class Predictor(Walker):
-    def __init__(self, num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode):
-        super(Predictor, self).__init__(num_rel, num_pattern, num_ruleLen, num_paths_dict, dataset_using, overall_mode)
+    def create_rule_score_bar(self, rule_dict):
+        '''
+        Create the bar of rule scores
 
-    def create_rule_score_bar(self, rule_dict1):
+        Parameters:
+            rule_dict: dictionary of rule
+
+        Returns:
+            rule_score_bar: bar of rule scores
+        '''
         rule_score_bar = {}
-        for rule_Len in rule_dict1.keys():
+        for rule_Len in rule_dict.keys():
             r_score_ls = []
-            for r in rule_dict1[rule_Len]:
+            for r in rule_dict[rule_Len]:
                 r_score_ls.append(r['score'])
             r_score_ls.sort(reverse=True)
             rule_score_bar[rule_Len] = r_score_ls[min(len(r_score_ls)-1, self.max_rulenum[int(rule_Len)])]
@@ -1437,6 +1671,19 @@ class Predictor(Walker):
 
 
     def create_res_ts_dict(self, query, rule, rule_Len, cur_walk, res_ts_dict):
+        '''
+        Create the dictionary of start time gap between the query and known facts
+
+        Parameters:
+            query: query
+            rule: rule
+            rule_Len: rule length
+            cur_walk: current walk
+            res_ts_dict: dictionary of start time gap
+
+        Returns:
+            res_ts_dict: dictionary of start time gap
+        '''
         for w in cur_walk:
             if w[-1] not in res_ts_dict:
                 res_ts_dict[w[-1]] = {}
@@ -1448,17 +1695,42 @@ class Predictor(Walker):
 
 
     def create_mapping_facts(self, facts, query_int, mode=0):
-        x = self.obtain_tmp_rel(facts[:, 3:], query_int).reshape((-1,1))
+        '''
+        Create the mapping facts
+
+        Parameters:
+            facts: facts
+            query_int: query
+            mode: 1 (non-Markovian setting), 0 (Markovian setting)
+
+        Returns:
+            output: mapping facts
+        '''
+        TR = self.obtain_tmp_rel(facts[:, 3:], query_int).reshape((-1,1))
         if mode:
-            x = np.hstack((facts[:, :3], x, facts[:, 3:]))
+            output = np.hstack((facts[:, :3], TR, facts[:, 3:]))
         else:
-            x = np.hstack((facts[:, :3], x))
-            x = np.unique(x, axis=0)
-            x = x.astype(int)
-        return x
+            output = np.hstack((facts[:, :3], TR))
+            output = np.unique(output, axis=0)
+            output = output.astype(int)
+        return output
 
 
     def evaluate_res_dict(self, res_dict, targ_node, query, facts, res_tfm_score, tol_gap=[0,0]):
+        '''
+        Evaluate the result dictionary
+
+        Parameters:
+            res_dict: result dictionary
+            targ_node: target node
+            query: query
+            facts: facts
+            res_tfm_score: tfm score
+            tol_gap: tolerance gap for TR
+
+        Returns:
+            rank: rank of the result
+        '''
         res_mat = np.zeros((self.num_entites,1))
         for k in res_dict.keys():
             res_mat[k,0] = res_dict[k]
@@ -1479,6 +1751,20 @@ class Predictor(Walker):
 
 
     def fact_check(self, f_check_enable, assiting_data, res_mat, query, facts, format_extra_len=0):
+        '''
+        Check the answers with specific temporal constaints
+
+        Parameters:
+            f_check_enable: whether enable the check
+            assiting_data: assisting data
+            res_mat: result matrix
+            query: query
+            facts: facts
+            format_extra_len: extra length for the format
+
+        Returns:
+            res_mat: result matrix
+        '''
         assert self.dataset_using in ['wiki', 'YAGO']
         
         if self.dataset_using == 'wiki':
@@ -1607,7 +1893,28 @@ class Predictor(Walker):
     def predict(self, rel_idx, bg_pred, test_data, test_data_inv, const_pattern_ls, assiting_data, dist_pars, train_edges,
                     queries_idx = None, tol_gap=[0, 0], selected_rules=None, enable_pure_guessing=True,
                     format_extra_len=0, f_predicting=0):
+        '''
+        Predict the result
 
+        Parameters:
+            rel_idx: relation index
+            bg_pred: background knowledge for prediction
+            test_data: test edges
+            test_data_inv: inverse test edges
+            const_pattern_ls: notations for temporal relations
+            assiting_data: assisting data for fact check
+            dist_pars: distribution parameters for tfm calculation
+            train_edges: edges in the training set
+            queries_idx: query index
+            tol_gap: tolerance gap for TR
+            selected_rules: selected rules to apply
+            enable_pure_guessing: whether enable pure guessing when no path is found
+            format_extra_len: extra length for the format
+            f_predicting: whether in the predicting setting (train: past data, test: future data)
+
+        Returns:
+            rank_dict: dictionary of ranks
+        '''
         f_name = 'learned_rules' if self.overall_mode == 'general' else 'learned_rules_' + self.overall_mode
         path = '../output/'+f_name+'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
 
