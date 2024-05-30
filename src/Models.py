@@ -1451,7 +1451,7 @@ class Collector(gadgets):
             var_prob_ruleLen: probability of rule length
             my_res: result
         '''
-        # calculate rule weights
+        # get path
         cur_path = self.get_weights_savepath_v2(rel_idx)
 
         if not os.path.exists(cur_path):
