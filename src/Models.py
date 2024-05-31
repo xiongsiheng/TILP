@@ -1809,7 +1809,7 @@ class Predictor(Walker):
         indices = np.where(res_mat > s)[0]
         related_int = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1) & np.isin(facts[:, 2], indices), 3:]
         overlap_degree = self.calculate_overlap_degree(query[3:], related_int)
-        rank = len(res_mat[res_mat[:,0]>s]) - np.sum(overlap_degree.tolist()) + 1
+        rank = max(len(res_mat[res_mat[:,0]>s]) - np.sum(overlap_degree.tolist()), 0) + 1
 
         return rank
 
