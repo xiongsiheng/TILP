@@ -91,6 +91,30 @@ class gadgets(TILP):
             return ((int1[:, 1] <= int2[:,0] - tol_gap[0]) & (int1[:, 0] <= int2[:,0] - tol_gap[0]))*(-1) + ((int1[:, 0] >= int2[:,1] + tol_gap[1]) & (int1[:, 1] >= int2[:,1] + tol_gap[1]))*1
 
 
+    def calculate_intersection_length(self, interval1, interval2):
+        start = np.maximum(interval1[0], interval2[0])
+        end = np.minimum(interval1[1], interval2[1])
+        return np.maximum(0, end - start)
+
+
+    def point_in_intervals(self, intervals, point):
+        results = (intervals[:, 0] <= point) & (point <= intervals[:, 1])
+        return results.astype(int)
+
+
+    def calculate_overlap_degree(self, known_interval, intervals):
+        '''
+        Given a known interval, calculate the overlap degree with other intervals.
+        '''
+        known_interval_length = known_interval[1] - known_interval[0]
+        if known_interval_length > 0:
+            intersection_lengths = self.calculate_intersection_length(known_interval, intervals.T)
+            overlap_degrees = (intersection_lengths*1.) / known_interval_length
+            return overlap_degrees
+        else:
+            return self.point_in_intervals(intervals, known_interval[0])*1.
+
+
     def print_dict(self, dict1):
         print('start')
         for k in dict1.keys():
@@ -277,13 +301,13 @@ class gadgets(TILP):
         When we merge rules, we consider masking them (ignore certain features in the rules).
         '''
         # mask_pre: [1, 1, 1, 0, 0, ...] decide which notations to preserve
-        alpha_dict = {}
+        merged_rules_dict = {}
         for r in rules_dict:
             cur_rule = tuple([a*b for a, b in zip(r['rule'], mask_pre)])
-            if cur_rule not in alpha_dict:
-                alpha_dict[cur_rule] = []
-            alpha_dict[cur_rule].append(r['alpha'])
-        return alpha_dict
+            if cur_rule not in merged_rules_dict:
+                merged_rules_dict[cur_rule] = []
+            merged_rules_dict[cur_rule].append(r['alpha'])
+        return merged_rules_dict
 
 
     def merge_dicts(self, dict_list, num_samples):
@@ -298,17 +322,18 @@ class gadgets(TILP):
 
 
 
-    def data_collection(self, idx_ls):
+    def data_collection(self, idx_ls, rel_idx):
         '''
-        If we process multiple samples at one time, the problem is that samples with more rules have more voting opportunities.
-        We can process each sample separately but it is time-consuming.
-        Instead, we merge the rule dict and calculate the average alpha.
+        To process multiple samples at one time, we merge their rule dict as a whole matrix.
+        Once we calculate the rule score with the matrix, we split the rules according to their sources.
         '''
         assert self.overall_mode in ['general', 'few', 'biased', 'time_shifting']
         idx_ls = [idx_ls] if not isinstance(idx_ls, list) else idx_ls
 
-        rules_dict, shallow_rules_dict = {}, {}
-        for idx in idx_ls:
+        rules_dict, rule_source_dict = {}, {}  # rule_source_dict: show the source of each rule
+        shallow_rules_dict = []
+
+        for (l, idx) in enumerate(idx_ls):
             path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else \
                    '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
             # print(path)
@@ -320,24 +345,23 @@ class gadgets(TILP):
                 with open(path, 'r') as f:
                     cur_rules_dict = json.load(f)
 
+            cur_shallow_rules_dict = []
             for rule_len in cur_rules_dict.keys():
                 rules_dict[rule_len] = [] if rule_len not in rules_dict.keys() else rules_dict[rule_len]
                 rules_dict[rule_len] += cur_rules_dict[rule_len]
 
-                mask_pre = [1] * (2*int(rule_len) + int(rule_len>1)) if self.f_adjacent_TR_only else [1] * (2*int(rule_len) + int(rule_len)*(int(rule_len)-1)/2)
-                alpha_dict = self.merge_rules(cur_rules_dict[rule_len], mask_pre)
-                # print(alpha_dict)
-                shallow_rules_dict[rule_len] = [] if rule_len not in shallow_rules_dict.keys() else shallow_rules_dict[rule_len]
-                shallow_rules_dict[rule_len] += [{'rule': r, 'alpha': np.mean(alpha_dict[r])} for r in alpha_dict]
-        
-        for rule_len in rules_dict:
-            rules_dict[rule_len] = self.merge_dicts(rules_dict[rule_len], len(idx_ls))
-            rules_dict[rule_len] = [{'rule': list(key), 'alpha': value} for key, value in rules_dict[rule_len].items()]
+                rule_source_dict[rule_len] = [] if rule_len not in rule_source_dict.keys() else rule_source_dict[rule_len]
+                rule_source_dict[rule_len].append([l, len(cur_rules_dict[rule_len])])
+                
+                mask_pre = [1] * (2*int(rule_len) + int(rule_len>1)) if self.f_adjacent_TR_only else \
+                           [1] * (2*int(rule_len) + int(rule_len)*(int(rule_len)-1)/2)
+                merged_rules_dict = self.merge_rules(cur_rules_dict[rule_len], mask_pre)
+                merged_rules_dict = [{'rule': r, 'alpha': np.mean(merged_rules_dict[r])} for r in merged_rules_dict if r in self.shallow_rule_dict[rel_idx]]
+                cur_shallow_rules_dict += merged_rules_dict
 
-            shallow_rules_dict[rule_len] = self.merge_dicts(shallow_rules_dict[rule_len], len(idx_ls))
-            shallow_rules_dict[rule_len] = [{'rule': list(key), 'alpha': value} for key, value in shallow_rules_dict[rule_len].items()]
-
-        return rules_dict, shallow_rules_dict
+            shallow_rules_dict.append(cur_shallow_rules_dict)    
+            
+        return rules_dict, rule_source_dict, shallow_rules_dict
 
 
 
@@ -367,7 +391,14 @@ class gadgets(TILP):
 
             if not os.path.exists(path):
                 continue
+            
+            with open(path, 'r') as f:
+                rules_dict = json.load(f)
+            if len(rules_dict) == 0:
+                continue
+            
             valid_train_idx.append(idx)
+        
         return valid_train_idx
 
 
@@ -391,12 +422,29 @@ class gadgets(TILP):
                     json.dump(my_res, f)
 
 
+    def create_rule_source_matrix(self, rule_source, num_samples, num_rules_total):
+        '''
+        Create a one-hot matrix to show the source of each rule.
+        '''
+        # Initialize a zero matrix with the given shape
+        one_hot_matrix = np.zeros((num_samples, num_rules_total), dtype=int)
+
+        idx_start = 0
+        # Fill in the one-hot matrix
+        for idx, num_rules in rule_source:
+            one_hot_matrix[idx, idx_start:idx_start+num_rules] = 1
+            idx_start += num_rules
+
+        # print(one_hot_matrix)
+        return one_hot_matrix
+
+
     def prepare_inputs(self, idx_ls, const_pattern_ls, rel_idx, TR_ls_len):
-        rules_dict, shallow_rules_dict = self.data_collection(idx_ls)
+        rules_dict, rule_source_dict, shallow_rules_dict = self.data_collection(idx_ls, rel_idx)
         
         input_dict = {}
         f_valid = 0
-        shallow_rule_idx, shallow_rule_alpha = np.zeros((1, self.shallow_score_length)), np.zeros((1, self.shallow_score_length))
+        shallow_rule_idx, shallow_rule_alpha = [], []
   
         for i in range(self.max_explore_len):
             rule_len = str(i+1)
@@ -408,19 +456,27 @@ class gadgets(TILP):
                         TR_ls.append([const_pattern_ls.index(TR) for TR in r['rule'][i+1:]])
                         alpha_ls.append([r['alpha']])
                 if len(rel_ls)>0:
-                    input_dict[i] = {'rel': np.array(rel_ls), 'TR': np.array(TR_ls), 'alpha': np.array(alpha_ls)}
+                    input_dict[i] = {'rel': np.array(rel_ls), 'TR': np.array(TR_ls), 'alpha': np.array(alpha_ls), 
+                                     'source': self.create_rule_source_matrix(rule_source_dict[rule_len], len(idx_ls), len(rel_ls))}  
                     f_valid = 1
             else:
-                input_dict[i] = {'rel': np.zeros((1, i+1)), 'TR': np.zeros((1, TR_ls_len[i])), 'alpha': np.zeros((1, 1))}
+                input_dict[i] = {'rel': np.zeros((1, i+1)), 'TR': np.zeros((1, TR_ls_len[i])), 'alpha': np.ones((1, 1)) * 1e-10, 
+                                 'source': np.zeros((len(idx_ls), 1))}
 
-            if rule_len in shallow_rules_dict.keys():
-                for r in shallow_rules_dict[rule_len]:
-                    cur_shallow_rule = r['rule']
-                    if cur_shallow_rule not in self.shallow_rule_dict[rel_idx]:
-                        continue
-                    shallow_rule_idx[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] = 1
-                    shallow_rule_alpha[0, self.shallow_rule_dict[rel_idx].index(cur_shallow_rule)] += r['alpha']
-
+        for sample in shallow_rules_dict:
+            rule_idx = np.zeros((self.shallow_score_length,))
+            rule_alpha = np.zeros((self.shallow_score_length,))
+            for r in sample:
+                cur_rule_idx = self.shallow_rule_dict[rel_idx].index(r['rule'])
+                rule_idx[cur_rule_idx] = 1
+                rule_alpha[cur_rule_idx] = r['alpha']
+            
+            shallow_rule_idx.append(rule_idx)
+            shallow_rule_alpha.append(rule_alpha)
+        
+        shallow_rule_idx = np.array(shallow_rule_idx)
+        shallow_rule_alpha = np.array(shallow_rule_alpha)
+        
         return input_dict, f_valid, shallow_rule_idx, shallow_rule_alpha
 
 
@@ -688,7 +744,6 @@ class gadgets(TILP):
         input_dict['mask'] = np.array(mask)
 
         return input_dict
-
 
 
     # def generate_input_dict_v2(self, rel_idx, ruleLen, train_edges):

@@ -664,6 +664,11 @@ class Trainer(gadgets):
         init_matrix = np.array(map(lambda row: row / np.linalg.norm(row), init_matrix))
         return init_matrix
 
+    def _clip_if_not_None(self, g, v, low, high):
+        if g is not None:
+            return (tf.clip_by_value(g, low, high), v)
+        else:
+            return (g, v)
 
     def _build_rnn_input(self):
         self.queries = tf.placeholder(tf.int32, [self.rnn_batch_size, self.num_ruleLen])
@@ -781,14 +786,15 @@ class Trainer(gadgets):
         Returns:
             rel_dict: dict of relation placeholders
             TR_dict: dict of TR placeholders
-            alpha_dict: dict of alpha placeholders
             TR_ls_len: list of TR lengths
+            alpha_dict: dict of alpha placeholders
+            source_dict: dict of rule source (from which sample) placeholders
         '''
-        rel_dict, TR_dict, alpha_dict = {}, {}, {}
+        rel_dict, TR_dict, alpha_dict, source_dict = {}, {}, {}, {}
 
         TR_ls_len = []
         for l in range(self.max_explore_len):   
-            # l = rule_len - 1
+            # Note: l = rule_len - 1
             if self.f_non_Markovian:  
                 cur_TR_ls_len = l+1 + int(l>0) if self.f_adjacent_TR_only else l+1 + l*(l+1)//2
             else:
@@ -797,20 +803,51 @@ class Trainer(gadgets):
             rel_dict[l] = tf.placeholder(tf.int64, shape=(None, l+1))
             TR_dict[l] = tf.placeholder(tf.int64, shape=(None, cur_TR_ls_len))
             alpha_dict[l] = tf.placeholder(tf.float32, shape=(None, 1))
+            source_dict[l] = tf.placeholder(tf.float32, shape=(None, None))
             TR_ls_len.append(cur_TR_ls_len)
 
-        return rel_dict, TR_dict, alpha_dict, TR_ls_len
+        return rel_dict, TR_dict, TR_ls_len, alpha_dict, source_dict
 
 
-    def calculate_TRL_score(self, rel_dict, TR_dict, alpha_dict, var_attn_rel_ls, var_attn_TR_ls, 
-                                var_attn_ruleLen, var_attn_TR_prime_ls):
+
+    def _attn_normalization(self, attn, sample_indices):
+        '''
+        Normalize the attention weights (Important!)
+
+        Parameters:
+            attn: attention weights, shape: (num_rules_total, 1)
+            sample_indices: sample indices, shape: (num_samples, num_rules_total)
+                            [[1, 0, 0, 0, 0],   # rule 1 from sample 1
+                             [0, 1, 1, 0, 0],   # rule 2, 3 from sample 2
+                             [0, 0, 0, 1, 1]]   # rule 4, 5 from sample 3
+
+        Returns:
+            normalized_attn: normalized attention weights, shape: (num_rules_total, 1)
+        '''
+        attn = tf.reshape(attn, (1, -1))
+        # Compute sum of attn for each sample
+        sample_sums = tf.reduce_sum(sample_indices*attn, axis=1) + 1e-20 # shape: (num_samples, )
+
+        # Normalize attn
+        normalized_attn = (sample_indices*attn) / tf.expand_dims(sample_sums, axis=1)
+        normalized_attn = tf.reduce_sum(normalized_attn, axis=0)
+
+        normalized_attn = tf.reshape(normalized_attn, (-1, 1))
+        return normalized_attn
+
+
+
+
+    def calculate_TRL_score(self, rel_dict, TR_dict, alpha_dict, source_dict,
+                            var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, var_attn_TR_prime_ls):
         '''
         Calculate the score for a batch of queries.
 
         Parameters:
-            rel_dict: dict of relations in a bacth 
+            rel_dict: dict of relations in a bacth
             TR_dict: dict of TR in a batch
             alpha_dict: dict of alpha in a batch
+            source_dict: dict of rule source (from which sample) in a batch
             var_attn_rel_ls: attention weights for relations
             var_attn_TR_ls: attention weights for Markovian TRs
             var_attn_ruleLen: attention weights for rule length
@@ -820,28 +857,31 @@ class Trainer(gadgets):
             score: the score for a batch of queries
         '''
         score = tf.constant(0.)
+        norm = tf.constant(0.)
         for l in range(self.max_explore_len):
             # l = rule_len - 1
             score_rel, score_TR = tf.constant(1.), tf.constant(1.)
             for k in range(l+1):
-                score_rel *= tf.nn.embedding_lookup(var_attn_rel_ls[l][k], rel_dict[l][:,k])
+                score_rel *= self._attn_normalization(tf.nn.embedding_lookup(var_attn_rel_ls[l][k], rel_dict[l][:,k]), source_dict[l])
                 if self.f_non_Markovian and self.f_adjacent_TR_only and k!=0 and k!=l:
                     continue
                 # TR_dict[l]: TR(I_1, I_q), TR(I_N, I_q), TR(I_1, I_2), TR(I_2, I_3), ...   if f_adjacent_TR_only
-                score_TR *=  tf.nn.embedding_lookup(var_attn_TR_ls[l][k], TR_dict[l][:, min(k, 1)]) if self.f_adjacent_TR_only \
-                                    else tf.nn.embedding_lookup(var_attn_TR_ls[l][k], TR_dict[l][:, k])
+                score_TR *= self._attn_normalization(tf.nn.embedding_lookup(var_attn_TR_ls[l][k], TR_dict[l][:, min(k, 1)]), source_dict[l]) if self.f_adjacent_TR_only else \
+                            self._attn_normalization(tf.nn.embedding_lookup(var_attn_TR_ls[l][k], TR_dict[l][:, k]), source_dict[l])
 
             if self.f_non_Markovian and l>0:
                 num_TR_non_Markovian = l if self.f_adjacent_TR_only else l*(l+1)//2
                 for k in range(num_TR_non_Markovian):
-                    score_TR *= tf.nn.embedding_lookup(var_attn_TR_prime_ls[l][k], TR_dict[l][:, 2+k]) if self.f_adjacent_TR_only \
-                                            else tf.nn.embedding_lookup(var_attn_TR_prime_ls[l][k], TR_dict[l][:, l+1+k])
+                    score_TR *= self._attn_normalization(tf.nn.embedding_lookup(var_attn_TR_prime_ls[l][k], TR_dict[l][:, 2+k]), source_dict[l]) if self.f_adjacent_TR_only else \
+                                self._attn_normalization(tf.nn.embedding_lookup(var_attn_TR_prime_ls[l][k], TR_dict[l][:, l+1+k]), source_dict[l])
 
-            cur_score = score_rel * score_TR * alpha_dict[l]
-            cur_score = tf.reduce_sum(cur_score, 0) * var_attn_ruleLen[0, l]
-            score += cur_score
+            cur_score = var_attn_ruleLen[0, l] * self._attn_normalization(score_rel * score_TR, source_dict[l]) # shape: (num_rules_total, 1)
+            norm += tf.matmul(source_dict[l], cur_score) # shape: source_dict: (num_samples, num_rules_total), cur_score: (num_rules_total, 1)
+            score += tf.matmul(source_dict[l], cur_score * alpha_dict[l])
+                    
+        score = score/(norm + 1e-20)
+        return score 
 
-        return score
 
 
     def calculate_shallow_score(self):
@@ -861,8 +901,13 @@ class Trainer(gadgets):
 
         attn_shallow_score = tf.nn.softmax(self.shallow_score, axis=1)
         self.rel_idx = tf.placeholder(tf.int64, shape=(None, ))
-        score = tf.nn.embedding_lookup(attn_shallow_score, self.rel_idx) * self.shallow_rule_idx * self.shallow_rule_alpha
-        score = tf.reduce_sum(score, 1)
+        
+        score = tf.nn.embedding_lookup(attn_shallow_score, self.rel_idx) * self.shallow_rule_idx 
+        score = score / (tf.reduce_sum(score, axis=1, keepdims=True) + 1e-10) # normalize the score
+        
+        score *= self.shallow_rule_alpha
+        score = tf.reduce_sum(score, axis=1, keepdims=True) # shape: (num_valid_samples, 1)        
+        
         return score, attn_shallow_score
 
 
@@ -878,17 +923,18 @@ class Trainer(gadgets):
             rel_dict: dict of relations in a bacth 
             TR_dict: dict of TR in a batch
             alpha_dict: dict of alpha in a batch
+            source_dict: dict of rule source (from which sample) in a batch
             TR_ls_len: list of TR lengths
             valid_train_idx: valid training indices
             feed_list: list of placeholders
             init: initialization    
         '''
         var_attn_rel_ls, var_attn_TR_ls, var_attn_TR_prime_ls, var_attn_ruleLen = self.build_rnn_graph()
-        rel_dict, TR_dict, alpha_dict, TR_ls_len = self.build_inputs()
+        rel_dict, TR_dict, TR_ls_len, alpha_dict, source_dict = self.build_inputs()
 
         # build the calculation graph
-        query_score = self.calculate_TRL_score(rel_dict, TR_dict, alpha_dict, var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, var_attn_TR_prime_ls)
-
+        query_score_RNN = self.calculate_TRL_score(rel_dict, TR_dict, alpha_dict, source_dict, var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, var_attn_TR_prime_ls)
+        
         valid_train_idx = self.obtain_valid_train_idx(range(len(train_edges)))
 
         self.shallow_rule_dict = {}
@@ -901,12 +947,13 @@ class Trainer(gadgets):
 
         # add shallow layers to enhance expressiveness
         query_score_shallow, var_attn_shallow_score = self.calculate_shallow_score()
-        query_score = (1-self.gamma_shallow) * query_score + (self.gamma_shallow) * query_score_shallow
+        query_score = (1-self.gamma_shallow) * query_score_RNN + self.gamma_shallow * query_score_shallow
 
-        final_loss = -tf.math.log(query_score)
+        final_loss = tf.reduce_sum(-tf.math.log(query_score + 1e-10))/self.batch_size
 
         optimizer = tf.train.AdamOptimizer()
         gvs = optimizer.compute_gradients(final_loss)
+        # capped_gvs = map(lambda (grad, var): self._clip_if_not_None(grad, var, -5., 5.), gvs) 
         optimizer_step = optimizer.apply_gradients(gvs)
         init = tf.global_variables_initializer()
 
@@ -915,7 +962,7 @@ class Trainer(gadgets):
         else:
             feed_list = [var_attn_rel_ls, var_attn_TR_ls, var_attn_ruleLen, var_attn_shallow_score, final_loss, optimizer_step]
 
-        return rel_dict, TR_dict, alpha_dict, TR_ls_len, valid_train_idx, feed_list, init
+        return rel_dict, TR_dict, TR_ls_len, alpha_dict, source_dict, valid_train_idx, feed_list, init
 
 
 
@@ -932,7 +979,7 @@ class Trainer(gadgets):
         Returns:
             loss_hist: history of loss
         '''
-        rel_dict, TR_dict, alpha_dict, TR_ls_len, valid_train_idx, feed_list, init = self.build_model(train_edges, targ_rel_ls)
+        rel_dict, TR_dict, TR_ls_len, alpha_dict, source_dict, valid_train_idx, feed_list, init = self.build_model(train_edges, targ_rel_ls)
         
         loss_hist = []
         loss_prev = 100
@@ -961,15 +1008,17 @@ class Trainer(gadgets):
                         cur_input_dict = {}
                         cur_input_dict[self.queries] = [[rel_idx] * (self.num_ruleLen-1) + [self.num_rel]]
                         x, f_valid, shallow_rule_idx, shallow_rule_alpha = self.prepare_inputs(input_idx_ls, const_pattern_ls, rel_idx, TR_ls_len)
-
+  
                         if not f_valid:
                             continue
 
                         for l in range(self.max_explore_len):
-                            cur_input_dict[rel_dict[l]], cur_input_dict[TR_dict[l]], cur_input_dict[alpha_dict[l]] = x[l]['rel'], x[l]['TR'], x[l]['alpha']
-                            # print(x[l])
+                            cur_input_dict[rel_dict[l]], cur_input_dict[TR_dict[l]], cur_input_dict[alpha_dict[l]], cur_input_dict[source_dict[l]] = \
+                                          x[l]['rel'], x[l]['TR'], x[l]['alpha'], x[l]['source']
+                        
+                        cur_input_dict[self.rel_idx] = [rel_idx]
+                        cur_input_dict[self.shallow_rule_idx], cur_input_dict[self.shallow_rule_alpha] = shallow_rule_idx, shallow_rule_alpha
 
-                        cur_input_dict[self.rel_idx], cur_input_dict[self.shallow_rule_idx], cur_input_dict[self.shallow_rule_alpha]  = [rel_idx], shallow_rule_idx, shallow_rule_alpha
 
                         if self.f_non_Markovian:
                             res_attn_rel_dict[rel_idx], res_attn_TR_dict[rel_idx], res_attn_TR_prime_dict[rel_idx], \
@@ -980,16 +1029,13 @@ class Trainer(gadgets):
 
                         loss_avg += loss
                         num_samples += 1
-
+                    
                 if num_samples == 0:
                     print('Error: num_samples = 0')
                     return [0]
 
                 loss_avg = loss_avg/num_samples
-                loss_avg = loss_avg[0]
-
-                # if epoch % 20 == 0:
-                #     print('Epoch ' + str(epoch+1)+ ', loss: ' + str(loss_avg))
+                loss_avg = loss_avg
 
                 print('Epoch ' + str(epoch+1)+ ', loss: ' + str(loss_avg))
 
@@ -1522,18 +1568,18 @@ class Collector(gadgets):
             my_res: result
 
         Returns:
-            s: score of the rule
+            s_RNN: score of the rule from RNN
+            s_shallow: score of the rule from shallow layers
         '''
-        s = self.calculate_rule_score(rule, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
+        s_RNN = self.calculate_rule_score(rule, int(rule_Len), const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, 
                                                     var_prob_pattern_prime_ls, var_prob_ruleLen)
-        s *= (1-self.gamma_shallow)
-        s += (self.gamma_shallow) * my_res['shallow_score'][my_res['shallow_rule_dict'].index(rule)] if rule in my_res['shallow_rule_dict'] else 0
-        return s
+        s_shallow = my_res['shallow_score'][my_res['shallow_rule_dict'].index(rule)] if rule in my_res['shallow_rule_dict'] else 0
+        return s_RNN, s_shallow
 
 
     def write_all_rule_dicts(self, rel_idx, rule_dict, rule_sup_num_dict, const_pattern_ls, cal_score=False, select_topK_rules=True):
         '''
-        Write all rule dictionaries to json files
+        Write all rule dictionaries to json files.
 
         Parameters:
             rel_idx: relation index
@@ -1552,19 +1598,30 @@ class Collector(gadgets):
                 return
 
         rule_dict1 = {}
+        
         for rule_Len in rule_dict.keys():
             rule_dict1[rule_Len] = []
             for r in rule_dict[rule_Len]:
                 r = r.tolist()
                 cur_rule_dict = {'rule': r, 'sup_num': rule_sup_num_dict[str(r)]}
                 if cal_score:
-                    s = self.calculate_rule_score_from_res(r, rule_Len, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res)
-                    cur_rule_dict['score'] = s
+                    s_RNN, s_shallow = self.calculate_rule_score_from_res(r, rule_Len, const_pattern_ls, var_prob_rel_ls, var_prob_pattern_ls, var_prob_pattern_prime_ls, var_prob_ruleLen, my_res)
+                    cur_rule_dict['score'] = [s_RNN, s_shallow]
 
                 rule_dict1[rule_Len].append(cur_rule_dict)
                 
             if select_topK_rules:
                 rule_dict1[rule_Len] = sorted(rule_dict1[rule_Len], key=lambda x: x['sup_num'], reverse=True)[:self.max_rulenum[int(rule_Len)]]
+        
+        if cal_score:
+            norm_RNN, norm_shallow = 1e-20, 1e-20
+            for rule_Len in rule_dict1.keys():
+                norm_RNN += sum([r['score'][0] for r in rule_dict1[rule_Len]])
+                norm_shallow += sum([r['score'][1] for r in rule_dict1[rule_Len]])
+            
+            for rule_Len in rule_dict1.keys():
+                for r in rule_dict1[rule_Len]:
+                    r['score'] = (1 - self.gamma_shallow) * (r['score'][0]/norm_RNN) + self.gamma_shallow * (r['score'][1]/norm_shallow)
 
         path = '../output/learned_rules/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json' if self.overall_mode == 'general' else\
                '../output/learned_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_all_rules_'+str(rel_idx)+'.json'
@@ -1740,12 +1797,19 @@ class Predictor(Walker):
         s = copy.copy(res_mat[targ_node,0])
 
         # delete other correct answers in rank
-        y = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),3:]
-        z = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),2:3]
-        y = self.obtain_tmp_rel(y, query[3:], tol_gap)
-        res_mat[z[y==0]] -= 9999
 
-        rank = len(res_mat[res_mat[:,0]>s])+1
+        # The static case
+        # related_int = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),3:]
+        # related_ent = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1),2:3]
+        # TR = self.obtain_tmp_rel(related_int, query[3:], tol_gap)
+        # res_mat[related_ent[TR==0]] -= 9999
+        # rank = len(res_mat[res_mat[:,0]>s])+1
+
+        # Since time information exists, we consider the interval overlapping degree (more strict than the static case)
+        indices = np.where(res_mat > s)[0]
+        related_int = facts[np.all(facts[:,:2]==[query[0], query[1]], axis=1) & np.isin(facts[:, 2], indices), 3:]
+        overlap_degree = self.calculate_overlap_degree(query[3:], related_int)
+        rank = len(res_mat[res_mat[:,0]>s]) - np.sum(overlap_degree.tolist()) + 1
 
         return rank
 
