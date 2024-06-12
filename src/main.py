@@ -101,7 +101,6 @@ if 'train model' in steps_to_do:
 
 
 
-
 if 'rule summary' in steps_to_do:
     do_calculate_rule_scores(targ_rel_ls, model_paras, num_rel, bg_train, const_pattern_ls, num_processes=24)
 
