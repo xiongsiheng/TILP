@@ -124,7 +124,7 @@ def write_query_explore_res(rel_ls, para_ls1, train_edges, valid_data, valid_dat
         rule_dict_from_train = {}
         for j in range(len(train_edges)):
             if train_edges[j,1] == rel_idx:
-                with open('../output/found_rules/'+dataset_using+'_train_query_'+ str(j) + path_name +'.json') as f:
+                with open('../output/found_paths/'+dataset_using+'_train_query_'+ str(j) + path_name +'.json') as f:
                     x = json.load(f)
                 if len(x) >0:
                     valid_train_query.append(j)
@@ -186,7 +186,7 @@ def find_composite_rules():
     def fun0(rel_idx, r_to_check):
         for j in range(len(train_edges)):
             if train_edges[j][1] == rel_idx:
-                with open('output/found_rules/'+dataset_using+'_train_query_'+str(j)+'.json') as f:
+                with open('output/found_paths/'+dataset_using+'_train_query_'+str(j)+'.json') as f:
                     rule_dict = json.load(f)
                 if '3' in rule_dict.keys():
                     for r in rule_dict['3']:

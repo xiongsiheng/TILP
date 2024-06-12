@@ -415,10 +415,10 @@ class Walker(gadgets):
         idx_ls1 = idx_ls if idx_ls is not None else range(len(train_edges))
 
         for idx in idx_ls1:
-            path1 = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
-                    '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
-            path2 = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
-                    '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+            path1 = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_paths_'+ self.overall_mode +'/'+ self.dataset_using + '_train_query_'+str(idx)+'.json'
+            path2 = '../output/found_time_gaps/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json' if self.overall_mode == 'general' else \
+                    '../output/found_time_gaps_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
 
             query = train_edges[idx]
             # print(query, idx)
@@ -966,7 +966,7 @@ class Trainer(gadgets):
 
 
 
-    def TRL_model_training_v2(self, targ_rel_ls, num_epoch, train_edges, const_pattern_ls):
+    def TRL_model_training_v2(self, targ_rel_ls, num_epoch, train_edges, const_pattern_ls, num_sample_per_rel=-1):
         '''
         Train the model for rule score learning.
 
@@ -975,6 +975,7 @@ class Trainer(gadgets):
             num_epoch: number of epochs
             train_edges: edges in the training set
             const_pattern_ls: notations for temporal relations
+            num_sample_per_rel: number of samples used per relation
 
         Returns:
             loss_hist: history of loss
@@ -999,6 +1000,10 @@ class Trainer(gadgets):
                     for idx in epoch_train_idx:
                         if train_edges[idx][1] == rel_idx:
                             batch_idx.append(idx)
+
+                    if num_sample_per_rel > 0:
+                        np.random.shuffle(batch_idx)
+                        batch_idx = batch_idx[:num_sample_per_rel]
 
                     batch_num = len(batch_idx)//self.batch_size
                     batch_num += 1 if len(batch_idx) % self.batch_size >0 else 0
@@ -1457,8 +1462,8 @@ class Collector(gadgets):
             if train_edges[idx][1] != rel_idx:
                 continue
             
-            path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else\
-                   '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            path = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else\
+                   '../output/found_paths_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
             if not os.path.exists(path):
                 # print(path + ' not found')
@@ -1678,7 +1683,7 @@ class Collector(gadgets):
     #                 for idx in query_idx:
     #                     if train_edges[idx][1] == rel_idx:
     #                         line = train_edges[idx]
-    #                         with open('../output/found_rules/'+ self.dataset_using \
+    #                         with open('../output/found_paths/'+ self.dataset_using \
     #                                             +'_train_query_'+str(idx)+'.json', 'r') as f:
     #                             v = json.load(f)
     #                         if rule_Len in v.keys():

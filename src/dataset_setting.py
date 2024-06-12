@@ -425,9 +425,9 @@ def obtain_distribution_parameters_Wc(train_edges, dataset_using, overall_mode, 
 
     for i in range(len(train_edges)):
         if overall_mode == 'general':
-            path = '../output/found_t_s/'+ dataset_using +'_train_query_'+str(i)+ '.json'
+            path = '../output/found_time_gaps/'+ dataset_using +'_train_query_'+str(i)+ '.json'
         elif overall_mode in ['few', 'biased', 'time_shifting']:
-            path = '../output/found_t_s_'+ overall_mode +'/'+ dataset_using +'_train_query_'+str(i)+ '.json'
+            path = '../output/found_time_gaps_'+ overall_mode +'/'+ dataset_using +'_train_query_'+str(i)+ '.json'
 
         if os.path.exists(path):
             with open(path) as f:

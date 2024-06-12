@@ -48,7 +48,7 @@ f_use_tfm = False  # whether use temporal feature modeling (Todo: fix issues)
 
 if not os.path.exists('../output'):
     os.mkdir('../output')
-output_files = ['found_rules', 'found_t_s', 'train_weights_tfm', 'train_weights', 'learned_rules', 'explore_res', 'rank_dict']
+output_files = ['found_paths', 'found_time_gaps', 'train_weights_tfm', 'train_weights', 'learned_rules', 'explore_res', 'rank_dict']
 for filename in output_files:
     if not os.path.exists('../output/' + filename):
         os.mkdir('../output/' + filename)
@@ -58,8 +58,9 @@ for filename in output_files:
 train_edges, valid_data, valid_data_inv, test_data, test_data_inv = do_normal_setting_for_dataset(dataset_name1, num_rel)
 assiting_data = obtain_assiting_data(dataset_using, dataset_name1, train_edges, num_rel, num_entites)
 
-# To accelarate, we randomly select a fixed number of positive samples for each relation. To use all positive samples, set num_sample_per_rel = -1
-pos_examples_idx, bg_train, bg_pred = split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=500)
+# To accelarate, we randomly select a fixed number of positive samples for each relation. 
+# To use all positive samples, set num_sample_per_rel = -1
+pos_examples_idx, bg_train, bg_pred = split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=-1)
 
 
 # print setting information
@@ -89,7 +90,9 @@ if 'find rules' in steps_to_do:
 
 
 if 'train model' in steps_to_do:
-    do_my_train_TRL(model_paras, dataset_using, bg_train, const_pattern_ls, targ_rel_ls=targ_rel_ls, num_epoch=100)
+    # To accelarate, in each epoch, we randomly select a fixed number of positive samples for each relation. 
+    # To use all positive samples, set num_sample_per_rel = -1.
+    do_my_train_TRL(model_paras, dataset_using, bg_train, const_pattern_ls, targ_rel_ls=targ_rel_ls, num_epoch=100, num_sample_per_rel=-1)
 
     if f_use_tfm:
         do_my_train_tfm(model_paras, targ_rel_ls, train_edges, dist_pars)

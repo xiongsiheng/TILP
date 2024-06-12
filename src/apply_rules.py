@@ -19,12 +19,11 @@ def my_apply(i, num_queries, num_processes, rel_idx, mode, train_edges, model_pa
 
 def do_my_find_rules(rel_ls, train_edges, model_paras, mode='path_search', path_name='', 
                     pos_examples_idx=None, time_shift_mode=0, num_processes=24):
-
     if mode == 'path_search':
         # delete all previous files
         _, _, _, _, dataset_using, overall_mode = model_paras
-        path = '../output/found_rules/' if overall_mode == 'general' else \
-            '../output/found_rules_'+ overall_mode +'/'
+        path = '../output/found_paths/' if overall_mode == 'general' else \
+            '../output/found_paths_'+ overall_mode +'/'
         files = glob.glob(os.path.join(path, dataset_using +'_train_query_*'))
         for file in files:
             os.remove(file)
@@ -40,9 +39,9 @@ def do_my_find_rules(rel_ls, train_edges, model_paras, mode='path_search', path_
 
 def check_application_results(train_edges, dataset_using):
     for idx in range(len(train_edges)//2):
-        with open('output/found_rules/' + dataset_using +'_train_query_'+str(idx)+'.json') as f:
+        with open('output/found_paths/' + dataset_using +'_train_query_'+str(idx)+'.json') as f:
             rule_dict = json.load(f)
-        with open('output/found_rules/' + dataset_using +'_train_query_'+str(idx + len(train_edges)//2)+'.json') as f:
+        with open('output/found_paths/' + dataset_using +'_train_query_'+str(idx + len(train_edges)//2)+'.json') as f:
             rule_dict_inv = json.load(f)
 
         for k in rule_dict.keys():
@@ -54,7 +53,7 @@ def check_application_results(train_edges, dataset_using):
 
 def check_certain_application_results(idx_ls):
     for idx in idx_ls:
-        with open('output/found_rules/YAGO_train_query_'+str(idx)+'.json') as f:
+        with open('output/found_paths/YAGO_train_query_'+str(idx)+'.json') as f:
             rule_dict = json.load(f)
 
         for k in rule_dict.keys():

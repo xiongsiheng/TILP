@@ -271,9 +271,9 @@ class gadgets(TILP):
         rules_dict = []
         for idx in idx_ls:
             if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+                path = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
             elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+                path = '../output/found_paths_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
             if not os.path.exists(path):
                 # print(path + ' not found')
@@ -334,8 +334,8 @@ class gadgets(TILP):
         shallow_rules_dict = []
 
         for (l, idx) in enumerate(idx_ls):
-            path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else \
-                   '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+            path = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(idx)+'.json' if self.overall_mode == 'general' else \
+                   '../output/found_paths_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
             # print(path)
 
             if not os.path.exists(path):
@@ -385,9 +385,9 @@ class gadgets(TILP):
         valid_train_idx = []
         for idx in idx_range:
             if self.overall_mode == 'general':
-                path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+                path = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
             elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_rules_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
+                path = '../output/found_paths_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+'.json'
 
             if not os.path.exists(path):
                 continue
@@ -691,9 +691,9 @@ class gadgets(TILP):
             cur_h_pair = []
 
             if self.overall_mode == 'general':
-                path = '../output/found_t_s/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+                path = '../output/found_time_gaps/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
             elif self.overall_mode in ['few', 'biased', 'time_shifting']:
-                path = '../output/found_t_s_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
+                path = '../output/found_time_gaps_'+ self.overall_mode +'/'+ self.dataset_using +'_train_query_'+str(idx)+ '.json'
 
             if os.path.exists(path):
                 with open(path) as f:
@@ -755,8 +755,8 @@ class gadgets(TILP):
     #         if query[1] == rel_idx:
     #             cur_idx_inv = self.get_inv_idx(int(len(train_edges)/2), i)
 
-    #             cur_file_path = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(i)+'.json'
-    #             cur_file_path_inv = '../output/found_rules/'+ self.dataset_using +'_train_query_'+str(cur_idx_inv)+'.json'
+    #             cur_file_path = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(i)+'.json'
+    #             cur_file_path_inv = '../output/found_paths/'+ self.dataset_using +'_train_query_'+str(cur_idx_inv)+'.json'
 
     #             if os.path.exists(cur_file_path) or os.path.exists(cur_file_path_inv):
     #                 if os.path.exists(cur_file_path):
