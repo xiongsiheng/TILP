@@ -50,8 +50,8 @@ TILP/
 │   └── YAGO11k/
 │
 └── output/
-    ├── found_rules/
-    ├── found_t_s/
+    ├── found_paths/
+    ├── found_time_gaps/
     ├── train_weights_tfm/
     ├── train_weights/
     ├── learned_rules/
