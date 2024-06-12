@@ -69,53 +69,6 @@ def evaluate_ranks(ranks):
     return {'hits_1': hits_1, 'hits_3': hits_3, 'hits_10': hits_10, 'mrr': mrr}
 
 
-# def obtain_id_dict():
-#     if dataset_using == 'YAGO':
-#         with open('../data/YAGO11k/entity2id.txt') as f:
-#             lines = f.readlines()
-#     elif dataset_using == 'wiki':
-#         with open('../data/WIKIDATA12k/entity2id.txt') as f:
-#             lines = f.readlines()
-
-
-#     id_dict = {}
-#     for j in range(len(lines)):
-#         line = lines[j]
-#         z, id1 = line.strip().split('\t')[:2]
-#         if dataset_using == 'YAGO':
-#             id_dict[id1] = z[1:-1]
-#         elif dataset_using == 'wiki':
-#             id_dict[id1] = z
-
-#     return id_dict
-
-
-# def explore_ent_int_dict():
-#     id_dict = obtain_id_dict()
-#     cnt = 0
-#     for j in range(len(test_data)):
-#         line = test_data[j]
-#         for k in [line[0], line[2]]:
-#             if str(k) in ent_int_dict.keys():
-#                 if isinstance(ent_int_dict[str(k)][0], int):
-#                     if not (ent_int_dict[str(k)][0]<=line[3]):
-#                         print('err', j)
-#                         print(k, id_dict[str(k)], ent_int_dict[str(k)])
-#                         print(line)
-#                         cnt += 1
-#                         continue
-#                 if isinstance(ent_int_dict[str(k)][1], int):
-#                     if not (ent_int_dict[str(k)][1]>=line[4]):
-#                         if dataset_using == 'wiki':
-#                             if line[1] in [17, 20]:
-#                                 continue
-#                         print('err', j)
-#                         print(k, id_dict[str(k)], ent_int_dict[str(k)])
-#                         print(line)
-#                         cnt += 1
-#                         continue
-#     print(cnt)
-
 
 def do_evaluate(rel_ls, dataset_using):
     all_ranks = {}

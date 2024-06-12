@@ -4,12 +4,11 @@ import json
 from Models import *
 from dataset_setting import *
 from dataset_setting2 import *
-from exploring import *
 from training import *
 from apply_rules import *
 from create_all_rules_dict import *
 from prediction import *
-from other_funs import *
+
 
 
 
