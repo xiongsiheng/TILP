@@ -22,7 +22,10 @@ steps_to_do = ['find rules', 'train model', 'rule summary', 'predict'] # you can
 
 num_pattern = 3 # num of temporal relations: before, touching, after
 const_pattern_ls = [-1, 0, 1] # notations for temporal relations
-num_ruleLen = [3, 5][dataset_selection]  # max rule length
+
+# max rule length
+# We use 3 for wiki dataset since it is much denser. It brings us efficiency but hurts the performance to some extent.
+num_ruleLen = [3, 5][dataset_selection]
 
 mode_selection = 0 # select mode: general, few training samples, biased data, time shifting
 overall_mode = ['general', 'few', 'biased', 'time_shifting'][mode_selection] # (Todo: fix issues for difficult modes)
