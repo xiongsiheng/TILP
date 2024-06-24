@@ -67,6 +67,13 @@ cd src
 python main.py
 ```
 
+Print rules:
+```sh
+# Find the rules and scores in output/learned_rules/{$dataset name}_all_rules_{$query relation}.json.
+# Format: {rule length: [{support num: int, rule: list, score: float}]}
+#          rule: a list of relations and temporal relations (Example in YAGO: query relation 0, rule length: 3, rule: [1, 16, 0, 1, 1, -1, 0, 1, 1]; Translation: wasBornIn(x, y, I_q) <- worksAt(x, e1, I_1) and graduatedFrom^{-1}(e1, e2, I_2) and wasBornIn(e2, y, I_3) and after(I_q, I_1) and after(I_q, I_2) and before(I_q, I_3) and touching(I_1, I_2) and after(I_1, I_3) and after(I_2, I_3))
+```
+
 ## Contact
 If you have any inquiries, please feel free to raise an issue or reach out to sxiong45@gatech.edu.
 
