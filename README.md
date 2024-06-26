@@ -56,8 +56,8 @@ TILP/
 └── output/
     ├── found_paths/
     ├── found_time_gaps/
-    ├── train_weights_tfm/
     ├── train_weights/
+    ├── train_weights_tfm/
     ├── learned_rules/
     └── rank_dict/
 ```
