@@ -59,7 +59,6 @@ TILP/
     ├── train_weights_tfm/
     ├── train_weights/
     ├── learned_rules/
-    ├── explore_res/
     └── rank_dict/
 ```
 
