@@ -64,8 +64,8 @@ assiting_data = obtain_assiting_data(dataset_using, dataset_name1, train_edges, 
 pos_examples_idx, bg_train, bg_pred = split_dataset(dataset_using, dataset_name1, train_edges, num_rel, num_sample_per_rel=-1)
 
 
-# print setting information
-print('######################### TILP setting #########################')
+# print config information
+print('######################### TILP Config #########################')
 print('Dataset: '+ dataset_using)
 print('Mode: '+ overall_mode)
 print('Steps to do: '+ str(steps_to_do))
