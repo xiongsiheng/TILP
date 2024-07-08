@@ -7,27 +7,48 @@ from training import *
 from apply_rules import *
 from create_all_rules_dict import *
 from prediction import *
+import argparse
 
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', type=str)
+parser.add_argument('--find_rules', action="store_true")
+parser.add_argument('--train_model', action="store_true")
+parser.add_argument('--rule_summary', action="store_true")
+parser.add_argument('--predict', action="store_true")
+parser.add_argument('--rule_len', type=int)
+parser.add_argument('--mode', default='general', type=str)
+parser.add_argument('--use_tfm', action="store_true")
 
 
-dataset_selection = 1 # select dataset
-dataset_using = ['wiki', 'YAGO'][dataset_selection]
-steps_to_do = ['find rules', 'train model', 'rule summary', 'predict'] # you can select steps to do especaially when resuming
+args = parser.parse_args()
+
+
+dataset_using = args.dataset
+num_ruleLen = args.rule_len
+
+# Possible modes: ['general', 'few', 'biased', 'time_shifting'];
+# Meaning: general, few training samples, biased data, time shifting (Todo: fix issues for difficult modes)
+overall_mode = args.mode
+
+steps_to_do = []
+if args.find_rules:
+    steps_to_do.append('find rules')
+if args.train_model:
+    steps_to_do.append('train model')
+if args.rule_summary:
+    steps_to_do.append('rule summary')
+if args.predict:
+    steps_to_do.append('predict')
+
+f_use_tfm = args.use_tfm  # whether use temporal feature modeling (Todo: fix issues)
 
 
 
 
 num_pattern = 3 # num of temporal relations: before, touching, after
 const_pattern_ls = [-1, 0, 1] # notations for temporal relations
-
-# max rule length
-# We use 3 for wiki dataset since it is much denser. It brings us efficiency but hurts the performance to some extent.
-num_ruleLen = [3, 5][dataset_selection]
-
-mode_selection = 0 # select mode: general, few training samples, biased data, time shifting
-overall_mode = ['general', 'few', 'biased', 'time_shifting'][mode_selection] # (Todo: fix issues for difficult modes)
 
 if dataset_using == 'wiki':
     dataset_name1 = 'WIKIDATA12k'
@@ -41,12 +62,9 @@ elif dataset_using == 'YAGO':
 
 model_paras = [num_rel, num_pattern, num_ruleLen, {}, dataset_using, overall_mode]
 targ_rel_ls = range(num_rel)
-f_use_tfm = False  # whether use temporal feature modeling (Todo: fix issues)
 
 
-
-
-
+# create output folders
 if not os.path.exists('../output'):
     os.mkdir('../output')
 output_files = ['found_paths', 'found_time_gaps', 'train_weights_tfm', 'train_weights', 'learned_rules', 'explore_res', 'rank_dict']
