@@ -62,12 +62,13 @@ TILP/
     └── rank_dict/
 ```
 
-To run the code, simply use the command. 
+To run the code, use the command. 
 
 All the settings and corresponding explanations are provided as in-context comments.
 ```sh
 cd src
-python main.py
+python main.py --dataset YAGO --find_rules --train_model --rule_summary --predict --rule_len 5
+python main.py --dataset wiki --find_rules --train_model --rule_summary --predict --rule_len 3
 ```
 
 Print rules:
