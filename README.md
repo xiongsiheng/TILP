@@ -13,7 +13,7 @@ We propose TILP, the first differentiable framework for temporal logical rules l
 <br>
 
 <p align="center">
-  <img src='https://github.com/xiongsiheng/TILP/blob/main/misc/RNN.png' width=600>
+  <img src='https://github.com/xiongsiheng/TILP/blob/main/misc/RNN.png' width=500>
 </p>
 
 **Rule 1:**
